@@ -217,6 +217,7 @@ EndFunc
 Func ExitScript()
 	$bShutdown = True
 	_GDIPlus_Shutdown()
+	DllCall("kernel32.dll", "bool", "ReleaseMutex", "hwnd", $g_hMutex) ; Release the mutex
 	Exit
 EndFunc
 
@@ -432,6 +433,7 @@ Func DisplayMessage($sText, $iDuration = $configDuration, $sFontName = $configFo
 	_GDIPlus_StringFormatDispose($hFormat)
 	_GDIPlus_FontDispose($hFont)
 	_GDIPlus_FontFamilyDispose($hFamily)
+	_WinAPI_DeleteObject($hRegion)
 
 	; Restart timer
 	$iMessageDuration = $iDuration
@@ -502,8 +504,8 @@ Func ProcessWindow()
 	; Get the window title and handle for the currently active window
 	Local $currentHwnd = WinGetHandle("[ACTIVE]")
 	If @error Or $currentHwnd = 0 Then Return
-		
-	If $currentHwnd = $hGUI Then Return
+
+	If $currentHwnd = $hGUI And $hGUI <> 0 Then Return
 
 	Local $aWinPos = WinGetPos($currentHwnd)
 	If @error Then Return ; Exit if we can't get window position
