@@ -166,7 +166,7 @@ TraySetState($TRAY_ICONSTATE_SHOW)
 
 ; ========== ========== ========== ========== ==========
 
-OnAutoItExitRegister("Unload")
+OnAutoItExitRegister("ExitScript")
 
 Func _Main()
 	_GDIPlus_Startup()
@@ -210,12 +210,14 @@ Func _Main()
 	WEnd
 EndFunc
 
-Func Unload()
-	$bShutdown = True
-EndFunc
-
 Func ExitScript()
 	$bShutdown = True
+	
+	If $configSplashMessages Then
+		DisplayMessage("Closing Browser Cursor Lock")
+	EndIf
+	Sleep(1000)
+	
 	_GDIPlus_Shutdown()
 
 	If $g_hMutex Then
