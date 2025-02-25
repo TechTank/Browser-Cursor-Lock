@@ -217,7 +217,13 @@ EndFunc
 Func ExitScript()
 	$bShutdown = True
 	_GDIPlus_Shutdown()
-	DllCall("kernel32.dll", "bool", "ReleaseMutex", "hwnd", $g_hMutex) ; Release the mutex
+
+	If $g_hMutex Then
+		DllCall("kernel32.dll", "bool", "ReleaseMutex", "hwnd", $g_hMutex)
+		DllCall("kernel32.dll", "bool", "CloseHandle", "hwnd", $g_hMutex) ; Free the mutex handle
+		$g_hMutex = 0
+	EndIf
+
 	Exit
 EndFunc
 
@@ -660,26 +666,13 @@ EndFunc
 ; ========== ========== ========== ========== ==========
 
 Func ToggleCursorLock()
-	HotKeySet($currentHotkey)
-	Local $bLock = $bHotkeyLock
+	; Prevent multiple presses
+	If $bHotkeyLock Then Return
 	$bHotkeyLock = True
-	If $bLock = True Then Return
 
-	If $currentHotkey <> "" And $currentHotkey <> $configHotkey Then
+	If $currentHotkey <> "" Then
 		; Unset the old hotkey
 		HotKeySet($currentHotkey)
-
-		; Attempt to set new hotkey
-		Local $result = HotKeySet($configHotkey, "ToggleCursorLock")
-		If $result = 0 Then
-			MsgBox(16, "HotKey Error", "Configured hotkey '" & $configHotkey & "' could not be set.")
-			Sleep(5)
-			HotKeySet($currentHotkey, ToggleCursorLock)
-			$bHotkeyLock = False
-			Return
-		Else
-			$currentHotkey = $configHotkey
-		EndIf
 	EndIf
 
 	; Ensure a valid game window is detected
