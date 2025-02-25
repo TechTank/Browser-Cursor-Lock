@@ -212,12 +212,12 @@ EndFunc
 
 Func ExitScript()
 	$bShutdown = True
-	
+
 	If $configSplashMessages Then
 		DisplayMessage("Closing Browser Cursor Lock")
 	EndIf
 	Sleep(1000)
-	
+
 	_GDIPlus_Shutdown()
 
 	If $g_hMutex Then
@@ -410,9 +410,11 @@ Func DisplayMessage($sText, $iDuration = $configDuration, $sFontName = $configFo
 		DllCall("user32.dll", "bool", "SetLayeredWindowAttributes", "hwnd", $hGUI, "dword", 0, "byte", $iOpacity, "dword", $LWA_ALPHA)
 
 		; Clear the existing drawing
-		_GDIPlus_GraphicsClear($hGraphic)
-		_GDIPlus_GraphicsDispose($hGraphic)
-		
+		If $hGraphic <> 0 Then
+			_GDIPlus_GraphicsClear($hGraphic)
+			_GDIPlus_GraphicsDispose($hGraphic)
+		EndIf
+
 		_WinAPI_RedrawWindow($hGUI, 0, 0, BitOR($RDW_INVALIDATE, $RDW_UPDATENOW))
 	EndIf
 
@@ -460,8 +462,10 @@ Func ClearMessage()
 		GUIDelete($hGUI)
 
 		; Clean up resources
-		_GDIPlus_GraphicsDispose($hGraphic)
-		$hGraphic = 0
+		If $hGraphic <> 0 Then
+			_GDIPlus_GraphicsDispose($hGraphic)
+			$hGraphic = 0
+		EndIf
 
 		$hGUI = 0
 	EndIf
@@ -742,6 +746,7 @@ Func ToggleCursorLock()
 EndFunc
 
 Func ResetCursorLock()
+	If Not $g_bCursorLocked Then Return
 	_WinAPI_ClipCursor(0)
 	$g_bCursorLocked = False
 	For $i = 0 To 3
