@@ -1,13 +1,13 @@
-# Cursor Lock for Browser Games  
+# Browser Cursor Lock
 
-A lightweight **AutoIt** tool that **confines the mouse cursor** to a game window inside a browser. This prevents accidental movement outside the game while allowing full control inside the client area. It will also prevent the dropdown X from displaying at the top of the screen.  
+A lightweight **AutoIt** tool that **confines the mouse cursor** to a game window inside a browser. This prevents accidental movement outside the game while allowing full control inside the client area. It will also prevent the dropdown X from displaying at the top of the screen, allowing you to keep full control over your games.
 
 ## Features  
-✅ 🔒 **Locks the cursor inside the game window**  
-✅ 🎮 **Automatically detects browser-based games**  
-✅ 🔄 **Toggle cursor lock/unlock with a hotkey**  
-✅ 🖥️ **Handles window borders & DPI scaling correctly**   
+✅ 🎮 **Automatically detects your browser-based games**
+✅ 🔄 **Toggle cursor lock/unlock with a hotkey**
+✅ 🔒 **Locks the cursor inside the game window**
+✅ 🖥️ **Customizable browser and game settings**
 
-## Requirements  
+## Requirements
 - Windows 7 / 10 / 11
 - AutoIt (for running the script directly)
