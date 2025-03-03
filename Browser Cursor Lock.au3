@@ -1,7 +1,7 @@
 #pragma compile(Out, "Browser Cursor Lock.exe")
 #pragma compile(Icon, "icon.ico")
-#pragma compile(FileVersion, "0.3.0.0")
-#pragma compile(ProductVersion, "0.3.0.0")
+#pragma compile(FileVersion, "1.0.0.0")
+#pragma compile(ProductVersion, "1.0.0.0")
 #pragma compile(ProductName, "Browser Cursor Lock")
 #pragma compile(CompanyName, "Brogan Scott Houston McIntyre")
 #pragma compile(InternalName, "BrowserCursorLock")
@@ -18,9 +18,6 @@
 #include <Array.au3>
 #include <Math.au3>
 #include <GDIPlus.au3>
-
-Global Const $GUI_FONTUNDERLINE = 1
-Global Const $GUI_CURSOR_HAND = 0
 
 ; ========== ========== ========== ========== ==========
 
@@ -52,19 +49,6 @@ Global $bShutdown = False
 
 ; ========== ========== ========== ========== ==========
 
-Global Const $GDIP_TEXTRENDERINGHINT_ANTIALIASGRIDFIT = 3 ; Specifies that a character is drawn using its antialiased glyph bitmap and hinting
-
-Global $hGDIP = 0
-Global $hGUI = 0, $hGraphic = 0
-Global $iMessagePadding = 10
-Global $iMessageTimer
-Global $iMessageDuration = 0
-
-Global $hClearMessageCallback = 0
-Global $iClearMessageID = 0
-
-; ========== ========== ========== ========== ==========
-
 Global $g_hActiveGameWnd = 0
 Global $g_bCursorLocked = False
 Global $browser = -1
@@ -77,198 +61,6 @@ Global $g_sLastWindowTitle = "" ; Last detected window title
 ; ========== ========== ========== ========== ==========
 
 Global $configPath = @ScriptDir & "\browser cursor lock.ini"
-
-Global $configHotkey = ""
-Global $currentHotkey = ""
-Global $bHotkeyLock = False
-
-Global $configFontSize, $configFont, $configOpacity, $configDuration
-Global $configSplashMessages, $configBrowserMessages, $configGameMessages
-Global $configLockCursorFullscreen, $configLockCursorWindowed, $configLockCursorAllTitles
-
-Func _GetConfig()
-	; Read hotkey setting
-	$configHotkey = IniRead($configPath, "general", "hotkey", "{NUMPADSUB}")
-	If StringStripWS($configHotkey, 3) = "" Then $configHotkey = "{NUMPADSUB}"
-
-	; Read cursor lock settings
-	$configLockCursorFullscreen = Number(IniRead($configPath, "cursor", "lock_cursor_fullscreen", "1"))
-	$configLockCursorWindowed = Number(IniRead($configPath, "cursor", "lock_cursor_windowed", "1"))
-	$configLockCursorAllTitles = Number(IniRead($configPath, "cursor", "lock_all_titles", "1"))
-
-	; Read message display settings
-	$configSplashMessages = Number(IniRead($configPath, "notifications", "splash_messages", "1"))
-	$configBrowserMessages = Number(IniRead($configPath, "notifications", "browser_messages", "1"))
-	$configGameMessages = Number(IniRead($configPath, "notifications", "game_messages", "1"))
-
-	; If there's an existing hotkey, remove it before setting a new one
-	If $currentHotkey <> "" And $currentHotkey <> $configHotkey Then
-		; Unset the old hotkey
-		HotKeySet($currentHotkey)
-
-		; Attempt to set new hotkey
-		Local $result = HotKeySet($configHotkey, "ToggleCursorLock")
-		If $result = 0 Then
-			MsgBox(16, "HotKey Error", "Configured hotkey '" & $configHotkey & "' could not be set.")
-			$result = HotKeySet($currentHotkey, "ToggleCursorLock")
-			$configHotkey = $currentHotkey
-		Else
-			$currentHotkey = $configHotkey
-		EndIf
-	EndIf
-
-	; Read and validate font size (default 24)
-	$configFontSize = Number(IniRead($configPath, "message", "fontsize", "24"))
-	If $configFontSize <= 0 Then $configFontSize = 24
-
-	; Read and validate message duration (default 2000 ms)
-	$configDuration = Number(IniRead($configPath, "message", "duration", "2000"))
-	If $configDuration <= 0 Then $configDuration = 2000
-
-	; Read and validate font family (default "Arial")
-	$configFont = IniRead($configPath, "message", "fontfamily", "Arial")
-	If StringStripWS($configFont, 3) = "" Then $configFont = "Arial"
-
-	; Test if the font exists by attempting to create a FontFamily object.
-	Local $hTestFamily = _GDIPlus_FontFamilyCreate($configFont)
-	If @error Then
-		MsgBox(16, "Font Error", "Configured font '" & $configFont & "' does not exist. Reverting to default 'Arial'.")
-		$configFont = "Arial"
-	Else
-		_GDIPlus_FontFamilyDispose($hTestFamily)
-	EndIf
-
-	; Read and validate the message opacity (default 150)
-	$configOpacity = Number(IniRead($configPath, "message", "opacity", "150"))
-	If $configOpacity <= 0 Then $configOpacity = 150
-	If $configOpacity >= 256 Then $configOpacity = 255
-
-	; ========== ========== ==========
-
-	; Default browser data (used if missing from INI)
-	Local $defaultBrowsers = "brave,chrome,firefox,edge"
-	Local $defaultBrowserData = _
-		[ _
-			["brave", "Brave", ".*Brave$", "0,0,0,0", "0,0,0,0"], _
-			["chrome", "Chrome", ".*Google Chrome$", "0,0,0,0", "0,0,0,0"], _
-			["firefox", "Firefox", ".*Mozilla Firefox$", "0,0,0,0", "0,0,0,0"], _
-			["edge", "Edge", ".*Microsoft\s*.*Edge$", "0,0,0,0", "0,0,0,0"] _
-		]
-
-	; Read browser IDs from the INI file
-	Local $sBrowsers = IniRead($configPath, "browsers", "ids", $defaultBrowsers)
-	If StringStripWS($sBrowsers, 3) = "" Then $sBrowsers = $defaultBrowsers
-
-	; Convert to an array
-	Local $aBrowserIDs = StringSplit($sBrowsers, ",", 2)
-
-	; Initialize browsers array
-	Global $g_aBrowsers[UBound($aBrowserIDs)][5]
-
-	; Loop through browser IDs and fetch data
-	For $i = 0 To UBound($aBrowserIDs) - 1
-		Local $browserID = StringStripWS($aBrowserIDs[$i], 3)
-		If $browserID = "" Then ContinueLoop
-
-		; Find default values (if any)
-		Local $defaultDisplay = $browserID
-		Local $defaultTitle = $browserID
-		Local $defaultFullOffsets = "0,0,0,0"
-		Local $defaultWindowOffsets = "0,0,0,0"
-
-		For $j = 0 To UBound($defaultBrowserData) - 1
-			If $defaultBrowserData[$j][0] = $browserID Then
-				$defaultDisplay = $defaultBrowserData[$j][1]
-				$defaultTitle = $defaultBrowserData[$j][2]
-				$defaultFullOffsets = $defaultBrowserData[$j][3]
-				$defaultWindowOffsets = $defaultBrowserData[$j][4]
-				ExitLoop
-			EndIf
-		Next
-
-		; Read display name (or set default)
-		Local $browserDisplay = IniRead($configPath, $browserID & "_browser", "name", $defaultDisplay)
-
-		; Read title regex(or set default)
-		Local $browserTitle = IniRead($configPath, $browserID & "_browser", "title", $defaultTitle)
-
-		; Read fullscreen offsets (or set default)
-		Local $sFullOffsets = IniRead($configPath, $browserID & "_browser", "fullscreen_offsets", $defaultFullOffsets)
-
-		; Read windowed offsets (or set default)
-		Local $sWindowOffsets = IniRead($configPath, $browserID & "_browser", "windowed_offsets", $defaultWindowOffsets)
-
-		; Store the browser
-		$g_aBrowsers[$i][0] = $browserID
-		$g_aBrowsers[$i][1] = $browserDisplay
-		$g_aBrowsers[$i][2] = $browserTitle
-		$g_aBrowsers[$i][3] = $sFullOffsets
-		$g_aBrowsers[$i][4] = $sWindowOffsets
-	Next
-
-	; ========== ========== ==========
-
-	; Default game data (used if missing from INI)
-	Local $defaultGames = "agar,paper2,digdig,snake"
-	Local $defaultGamesData = _
-		[ _
-			["agar", "Agar.io", "(?i)agar.io", "0,0,90,0", "0,0,90,0"], _
-			["paper2", "Paper 2", "(?i)paper", "0,0,0,0", "0,0,0,0"], _
-			["digdig", "Digdig", "(?i)digdig.io", "0,0,0,0", "0,0,0,0"], _
-			["snake", "Snake", "(?i)snake.io", "0,0,0,0", "0,0,0,0"] _
-		]
-
-	; Read game IDs from the INI file
-	Local $sGames = IniRead($configPath, "games", "ids", $defaultGames)
-	If StringStripWS($sGames, 3) = "" Then $sGames = $defaultGames
-
-	; Convert to an array
-	Local $aGameIDs = StringSplit($sGames, ",", 2)
-
-	; Initialize games array
-	Global $g_aGames[UBound($aGameIDs)][5]
-
-	; Loop through game IDs and fetch data
-	For $i = 0 To UBound($aGameIDs) - 1
-		Local $gameID = StringStripWS($aGameIDs[$i], 3)
-		If $gameID = "" Then ContinueLoop
-
-		; Find default values (if any)
-		Local $defaultDisplay = $gameID
-		Local $defaultTitle = $gameID
-		Local $defaultFullOffsets = "0,0,0,0"
-		Local $defaultWindowOffsets = "0,0,0,0"
-
-		For $j = 0 To UBound($defaultGamesData) - 1
-			If $defaultGamesData[$j][0] = $gameID Then
-				$defaultDisplay = $defaultGamesData[$j][1]
-				$defaultTitle = $defaultGamesData[$j][2]
-				$defaultFullOffsets = $defaultGamesData[$j][3]
-				$defaultWindowOffsets = $defaultGamesData[$j][4]
-				ExitLoop
-			EndIf
-		Next
-
-		; Read display name (or set default)
-		Local $gameDisplay = IniRead($configPath, $gameID & "_game", "name", $defaultDisplay)
-
-		; Read title regex(or set default)
-		Local $gameTitle = IniRead($configPath, $gameID & "_game", "title", $defaultTitle)
-
-		; Read fullscreen offsets (or set default)
-		Local $sFullOffsets = IniRead($configPath, $gameID & "_game", "fullscreen_offsets", $defaultFullOffsets)
-
-		; Read windowed offsets (or set default)
-		Local $sWindowOffsets = IniRead($configPath, $gameID & "_game", "windowed_offsets", $defaultWindowOffsets)
-
-		; Store in game array
-		$g_aGames[$i][0] = $gameID
-		$g_aGames[$i][1] = $gameDisplay
-		$g_aGames[$i][2] = $gameTitle
-		$g_aGames[$i][3] = $sFullOffsets
-		$g_aGames[$i][4] = $sWindowOffsets
-	Next
-EndFunc
 
 ; ========== ========== ========== ========== ==========
 
@@ -290,9 +82,7 @@ Func _Main()
 
 	_GetConfig()
 
-	If $configSplashMessages Then
-		DisplayMessage("Browser Cursor Lock")
-	EndIf
+	If $configSplashMessages Then DisplayMessage("Browser Cursor Lock")
 
 	While Not $bShutdown
 		ProcessWindow()
@@ -371,386 +161,8 @@ EndFunc
 
 ; ========== ========== ========== ========== ==========
 
-Func WindowPosition($hWnd)
-	; Get window position
-	Local $aWinPos = WinGetPos($hWnd)
-	If @error Then Return SetError(1, 0, 0)
-	If Not IsArray($aWinPos) Or UBound($aWinPos) < 4 Then Return SetError(2, 0, 0)
-
-	; Set the window frame variables and calculate the area of the window
-	Local $iWindowX = $aWinPos[0], $iWindowY = $aWinPos[1]
-	Local $iWindowWidth = $aWinPos[2], $iWindowHeight = $aWinPos[3]
-	Local $iWindowArea = $iWindowWidth * $iWindowHeight
-
-	; Get borders from registry
-	Local $aBorders = GetWindowBorders()
-	If @error Then
-		Local $aBorders[2] = [1, 3] ; Error case
-	EndIf
-
-	; Extract border values
-	Local $iBorderTop = $aBorders[0] ; Title Bar + Padded Border
-	Local $iBorderRight = $aBorders[1]
-	Local $iBorderBottom = $aBorders[0]
-	Local $iBorderLeft = $aBorders[1]
-
-	; Calculate client area
-	Local $iClientX = $iWindowX + $iBorderLeft
-	Local $iClientY = $iWindowY + $iBorderTop
-	Local $iClientWidth = $iWindowWidth - ($iBorderLeft + $iBorderRight)
-	Local $iClientHeight = $iWindowHeight - ($iBorderTop + $iBorderBottom)
-
-	; ==========
-
-	; Get client rectangle size
-	Local $tClientRect = _WinAPI_GetClientRect($hWnd)
-	Local $iClientRectWidth = DllStructGetData($tClientRect, 3)
-	Local $iClientRectHeight = DllStructGetData($tClientRect, 4)
-
-	; Create a struct to hold the converted client position
-	Local $tPoint = DllStructCreate("int X; int Y")
-	DllStructSetData($tPoint, "X", 0)
-	DllStructSetData($tPoint, "Y", 0)
-
-	; Convert client (0,0) to absolute screen coordinates
-	_WinAPI_ClientToScreen($hWnd, DllStructGetPtr($tPoint))
-
-	Local $iClientRectX = DllStructGetData($tPoint, "X")
-	Local $iClientRectY = DllStructGetData($tPoint, "Y")
-
-	; ==========
-
-	; Retrieve all monitors
-	Local $aMonitors = _WinAPI_EnumDisplayMonitors()
-	If Not IsArray($aMonitors) Then Return SetError(2, 0, 0)
-
-	Local $bestMonitor = -1, $maxCoverage = 0
-	Local $aMonitor[6] = [0, 0, 0, 0, 0, 0]
-
-	For $i = 1 To $aMonitors[0][0]
-		Local $hMonitor = $aMonitors[$i][0]
-		Local $aMonitorInfo = _WinAPI_GetMonitorInfo($hMonitor)
-		If @error Or Not IsArray($aMonitorInfo) Then ContinueLoop
-
-		Local $iMonitorLeft = DllStructGetData($aMonitorInfo[0], "Left")
-		Local $iMonitorTop = DllStructGetData($aMonitorInfo[0], "Top")
-		Local $iMonitorRight = DllStructGetData($aMonitorInfo[0], "Right")
-		Local $iMonitorBottom = DllStructGetData($aMonitorInfo[0], "Bottom")
-
-		; Calculate intersection area
-		Local $iOverlapLeft = ($iWindowX > $iMonitorLeft) ? $iWindowX : $iMonitorLeft
-		Local $iOverlapTop = ($iWindowY > $iMonitorTop) ? $iWindowY : $iMonitorTop
-		Local $iOverlapRight = ($iWindowX + $iWindowWidth < $iMonitorRight) ? ($iWindowX + $iWindowWidth) : $iMonitorRight
-		Local $iOverlapBottom = ($iWindowY + $iWindowHeight < $iMonitorBottom) ? ($iWindowY + $iWindowHeight) : $iMonitorBottom
-
-		Local $iOverlapWidth = $iOverlapRight - $iOverlapLeft
-		Local $iOverlapHeight = $iOverlapBottom - $iOverlapTop
-
-		If $iOverlapWidth > 0 And $iOverlapHeight > 0 Then
-			Local $iOverlapArea = $iOverlapWidth * $iOverlapHeight
-			Local $iCoverage = ($iOverlapArea / $iWindowArea) * 100
-
-			; Keep track of the monitor with the most coverage
-			If $iCoverage > $maxCoverage Then
-				$maxCoverage = $iCoverage
-				$bestMonitor = $hMonitor
-				$aMonitor[0] = $iMonitorLeft
-				$aMonitor[1] = $iMonitorTop
-				$aMonitor[2] = $iMonitorRight - $iMonitorLeft
-				$aMonitor[3] = $iMonitorBottom - $iMonitorTop
-				$aMonitor[4] = $iCoverage
-				$aMonitor[5] = $i
-			EndIf
-		EndIf
-	Next
-
-	; Determine if the window is fullscreen
-	Local $bWindowFullscreen = False
-	If $iWindowX = $aMonitor[0] And $iWindowY = $aMonitor[1] And _
-	$iWindowWidth = $aMonitor[2] And $iWindowHeight = $aMonitor[3] And _
-	$iClientRectX = $aMonitor[0] And $iClientRectY = $aMonitor[1] And _
-	$iClientRectWidth = $aMonitor[2] And $iClientRectHeight = $aMonitor[3] Then
-		$bWindowFullscreen = True
-	EndIf
-
-	; ==========
-
-	Local $aWindow[4] = [$iWindowX, $iWindowY, $iWindowWidth, $iWindowHeight]
-	Local $aBorder[4] = [$iBorderTop, $iBorderRight, $iBorderBottom, $iBorderLeft]
-	Local $aClient[4] = [$iClientX, $iClientY, $iClientWidth, $iClientHeight]
-	Local $aClientRect[4] = [$iClientRectX, $iClientRectY, $iClientRectWidth, $iClientRectHeight]
-	Local $aFlags = $bWindowFullscreen
-
-	If $bestMonitor = -1 Then Return SetError(3, 0, 0)
-	Local $aReturn[6] = [$aMonitor, $aWindow, $aBorders, $aClient, $aClientRect, $aFlags]
-	Return $aReturn
-EndFunc
-
-Func GetWindowBorders()
-	Local $sRegKey = "HKEY_CURRENT_USER\Control Panel\Desktop\WindowMetrics"
-
-	; Read values from registry
-	Local $iBorderWidth = RegRead($sRegKey, "BorderWidth")
-	Local $iPaddedBorderWidth = RegRead($sRegKey, "PaddedBorderWidth")
-
-	If @error Then Return SetError(1, 0, 0) ; Registry keys missing
-
-	; Convert from twips (-1 twip = 1/20th of a pixel)
-	$iBorderWidth = Abs($iBorderWidth) / 20
-	$iPaddedBorderWidth = Abs($iPaddedBorderWidth) / 20
-
-	; Apply DPI scaling
-	Local $iDPI = _WinAPI_GetDPI()
-	$iBorderWidth = Round($iBorderWidth * ($iDPI / 96))
-	$iPaddedBorderWidth = Round($iPaddedBorderWidth * ($iDPI / 96))
-
-	Local $return[2] = [$iBorderWidth, $iPaddedBorderWidth]
-	Return $return
-EndFunc
-
-Func _WinAPI_GetDPI()
-	Local $hDC = _WinAPI_GetDC(0)
-	Local $iDPI = DllCall("gdi32.dll", "int", "GetDeviceCaps", "handle", $hDC, "int", 88) ; 88 = LOGPIXELSX
-	_WinAPI_ReleaseDC(0, $hDC)
-	Return $iDPI[0]
-EndFunc
-
-; ========== ========== ========== ========== ==========
-
-Func DisplayMessage($sText, $iDuration = $configDuration, $sFontName = $configFont, $iFontSize = $configFontSize, $iOpacity = $configOpacity)
-	ClearMessageTimerStop()
-	$sText = StringStripWS($sText, 3)
-
-	Local $aTextSize = _StringInPixelsNoGUI($sText, $sFontName, $iFontSize, 0)
-	Local $iTextWidth = Ceiling($aTextSize[0]) + 3 + ($iMessagePadding * 2)
-	Local $iTextHeight = Ceiling($aTextSize[1]) + ($iMessagePadding * 2)
-
-	Local Const $LWA_ALPHA = 0x00000002
-
-	; Get active window handle
-	Local $hWnd = WinGetHandle("[ACTIVE]")
-	If @error Then $hWnd = 0
-	Local $aWindowPosition = WindowPosition($hWnd)
-	Local $aRect[4]
-	If @error = 0 And IsArray($aWindowPosition) And IsArray($aWindowPosition[1]) Then
-		$aRect = $aWindowPosition[0] ; Assign the array
-	Else
-		$aRect[0] = 0
-		$aRect[1] = 0
-		$aRect[2] = @DesktopWidth
-		$aRect[3] = @DesktopHeight
-		; = [0, 0, @DesktopWidth, @DesktopHeight] ; Default values
-	EndIf
-
-	; Calculate message position centered on detected monitor
-	Local $iMessageX = $aRect[0] + (($aRect[2] - $iTextWidth) / 2)
-	Local $iMessageY = $aRect[1] + (($aRect[3] - $iTextHeight) / 2)
-
-	; Create GUI
-	If $hGUI = 0 Then
-		$hGUI = GUICreate("Browser Cursor Lock", $iTextWidth, $iTextHeight, $iMessageX, $iMessageY, $WS_POPUP, _
-						BitOR($WS_EX_TOPMOST, $WS_EX_LAYERED, $WS_EX_TOOLWINDOW, $WS_EX_NOACTIVATE))
-
-		DllCall("user32.dll", "long", "SetWindowLong", "hwnd", $hGUI, "int", $GWL_EXSTYLE, "long", _
-				BitOR($WS_EX_NOACTIVATE, $WS_EX_TOOLWINDOW, $WS_EX_TRANSPARENT, $WS_EX_LAYERED))
-
-		; Set Opacity
-		DllCall("user32.dll", "bool", "SetLayeredWindowAttributes", "hwnd", $hGUI, "dword", 0, "byte", $iOpacity, "dword", $LWA_ALPHA)
-
-		WinSetOnTop($hGUI, "", 1)
-		GUISetState(@SW_SHOWNA, $hGUI)
-	Else
-		; Move existing message window
-		Local Const $SWP_NOZORDER = 0x0004
-		DllCall("user32.dll", "bool", "SetWindowPos", "hwnd", $hGUI, "hwnd", 0, "int", $iMessageX, "int", $iMessageY, _
-				"int", $iTextWidth + 100, "int", $iTextHeight, "uint", $SWP_NOZORDER)
-
-		; Set Opacity
-		DllCall("user32.dll", "bool", "SetLayeredWindowAttributes", "hwnd", $hGUI, "dword", 0, "byte", $iOpacity, "dword", $LWA_ALPHA)
-
-		; Clear the existing drawing
-		If $hGraphic <> 0 Then
-			_GDIPlus_GraphicsClear($hGraphic)
-			_GDIPlus_GraphicsDispose($hGraphic)
-		EndIf
-
-		_WinAPI_RedrawWindow($hGUI, 0, 0, BitOR($RDW_INVALIDATE, $RDW_UPDATENOW))
-	EndIf
-
-	$hGraphic = _GDIPlus_GraphicsCreateFromHWND($hGUI)
-	_GDIPlus_GraphicsSetTextRenderingHint($hGraphic, $GDIP_TEXTRENDERINGHINT_ANTIALIASGRIDFIT)
-
-	Local $hBrush = _GDIPlus_BrushCreateSolid(0x7F000000)
-	Local $hFormat = _GDIPlus_StringFormatCreate()
-	Local $aRet = DllCall($hGDIP, "int", "GdipSetStringFormatAlign", "ptr", $hFormat, "int", 0)
-	If @error Then Return SetError(1, 0, 0)
-	If @error Or Not IsArray($aRet) Or $aRet[0] <> 0 Then
-		MsgBox(16, "Error", "Failed to set StringFormat flags.")
-	EndIf
-
-	Local $aRet = DllCall($hGDIP, "int", "GdipSetStringFormatFlags", "ptr", $hFormat, "int", 0)
-	If @error Or Not IsArray($aRet) Or $aRet[0] <> 0 Then
-		MsgBox(16, "Error", "Failed to set StringFormat flags.")
-	EndIf
-
-	Local $hFamily = _GDIPlus_FontFamilyCreate($sFontName)
-	Local $hFont = _GDIPlus_FontCreate($hFamily, $iFontSize, 0)
-
-	Local $tLayout = _GDIPlus_RectFCreate($iMessagePadding - 3, $iMessagePadding, $aTextSize[0] + 100, $aTextSize[1])
-	Local $hRegion = _WinAPI_CreateRoundRectRgn(0, 0, $iTextWidth, $iTextHeight, $iMessagePadding * 2, $iMessagePadding * 2)
-
-	_WinAPI_RedrawWindow($hGUI, 0, 0, BitOR($RDW_INVALIDATE, $RDW_UPDATENOW))
-
-	; Draw the rounded corners
-	_WinAPI_SetWindowRgn($hGUI, $hRegion)
-
-	; Draw the updated string
-	_GDIPlus_GraphicsDrawStringEx($hGraphic, $sText, $hFont, $tLayout, $hFormat, $hBrush)
-
-	_WinAPI_RedrawWindow($hGUI, 0, 0, BitOR($RDW_INVALIDATE, $RDW_UPDATENOW))
-
-	; Cleanup GDI+ objects
-	_GDIPlus_BrushDispose($hBrush)
-	_GDIPlus_StringFormatDispose($hFormat)
-	_GDIPlus_FontDispose($hFont)
-	_GDIPlus_FontFamilyDispose($hFamily)
-	_WinAPI_DeleteObject($hRegion)
-
-	; Restart timer
-	$iMessageDuration = $iDuration
-	$iMessageTimer = TimerInit()
-	ClearMessageTimerStart()
-EndFunc
-
-Func ClearMessageTimerStart()
-	If @AutoItX64 Then
-		; 64-bit: third param must be "ptr" or "uint_ptr"
-		$hClearMessageCallback = DllCallbackRegister("ClearMessageTimer", "int", "hwnd;uint;ptr;dword")
-	Else
-		; 32-bit: third param is just "uint"
-		$hClearMessageCallback = DllCallbackRegister("ClearMessageTimer", "int", "hwnd;uint;uint;dword")
-	EndIf
-
-	$iClearMessageID = DllCall("User32.dll", "int", "SetTimer", _
-		"hwnd", 0, _
-		"int", 0, _
-		"int", 50, _
-		"ptr", DllCallbackGetPtr($hClearMessageCallback))
-
-	If @error Or Not IsArray($iClearMessageID) Then
-		MsgBox(16, "Timer Error", "Failed to set the ClearMessage timer.")
-		$iClearMessageID = 0
-		DllCallbackFree($hClearMessageCallback)
-		$hClearMessageCallback = 0
-	EndIf
-EndFunc
-
-Func ClearMessageTimerStop()
-	; If the timer is running, kill it
-	If $iClearMessageID And IsArray($iClearMessageID) Then
-		DllCall("User32.dll", "int", "KillTimer", "hwnd", 0, "int", $iClearMessageID[0])
-	EndIf
-
-	; And free the callback
-	If $hClearMessageCallback <> 0 Then
-		DllCallbackFree($hClearMessageCallback)
-	EndIf
-
-	$iClearMessageID = 0
-	$hClearMessageCallback = 0
-EndFunc
-
-Func ClearMessageTimer($hWnd, $uMsg, $idEvent, $dwTime)
-	If $hGUI <> 0 Then
-		Local $elapsed = TimerDiff($iMessageTimer)
-
-		If $elapsed >= $iMessageDuration Then
-			ClearMessage()
-		EndIf
-	EndIf
-	Return 0
-EndFunc
-
-Func ClearMessage()
-	ClearMessageTimerStop()
-	If $hGUI <> 0 Then
-		; Clear timer
-		$iMessageTimer = Null
-		$iMessageDuration = 0
-
-		GUISetState(@SW_UNLOCK, $hGUI)
-
-		; Remove the GUI
-		GUIDelete($hGUI)
-
-		; Clean up resources
-		If $hGraphic <> 0 Then
-			_GDIPlus_GraphicsDispose($hGraphic)
-			$hGraphic = 0
-		EndIf
-
-		$hGUI = 0
-	EndIf
-EndFunc
-
-; ========== ========== ========== ========== ==========
-
-Func _StringInPixelsNoGUI($sString, $sFontFamily, $fSize, $iStyle, $iColWidth = 0)
-	; Get the desktop DC
-	Local $hDC = _WinAPI_GetDC(0)
-	; Create a graphics object from the DC
-	Local $hGraphic = _GDIPlus_GraphicsCreateFromHDC($hDC)
-
-	; Set up a measurable character range covering the entire string
-	Local $aRanges[2][2] = [[1]]
-	$aRanges[1][0] = 0
-	$aRanges[1][1] = StringLen($sString)
-
-	; Create a StringFormat object and set it to measure character ranges
-	Local $hFormat = _GDIPlus_StringFormatCreate()
-	_GDIPlus_StringFormatSetMeasurableCharacterRanges($hFormat, $aRanges)
-
-	; Create a font and set the rendering hint
-	Local $hFamily = _GDIPlus_FontFamilyCreate($sFontFamily)
-	Local $hFont = _GDIPlus_FontCreate($hFamily, $fSize, $iStyle)
-	_GDIPlus_GraphicsSetTextRenderingHint($hGraphic, $GDIP_TEXTRENDERINGHINT_ANTIALIASGRIDFIT)
-
-	; If no column width is provided, use a large width
-	If $iColWidth = 0 Then $iColWidth = 1000
-	Local $tLayout = _GDIPlus_RectFCreate(0, 0, $iColWidth, 1000)
-
-	; Measure the character ranges
-	Local $aRegions = _GDIPlus_GraphicsMeasureCharacterRanges($hGraphic, $sString, $hFont, $tLayout, $hFormat)
-	If Not IsArray($aRegions) Then
-		_GDIPlus_FontDispose($hFont)
-		_GDIPlus_FontFamilyDispose($hFamily)
-		_GDIPlus_StringFormatDispose($hFormat)
-		_GDIPlus_GraphicsDispose($hGraphic)
-		_WinAPI_ReleaseDC(0, $hDC)
-		Return
-	EndIf
-
-	Local $aBounds = _GDIPlus_RegionGetBounds($aRegions[1], $hGraphic)
-
-	; Get the measured width and height
-	Local $aWidthHeight[2] = [$aBounds[2], $aBounds[3]]
-
-	; Clean up
-	_GDIPlus_FontDispose($hFont)
-	_GDIPlus_FontFamilyDispose($hFamily)
-	_GDIPlus_StringFormatDispose($hFormat)
-	If IsArray($aRegions) Then
-		For $i = 1 To $aRegions[0]
-			_GDIPlus_RegionDispose($aRegions[$i])
-		Next
-	EndIf
-	_GDIPlus_GraphicsDispose($hGraphic)
-	_WinAPI_ReleaseDC(0, $hDC)
-
-	Return $aWidthHeight
-EndFunc
-
-; ========== ========== ========== ========== ==========
+; =====
+#Region Windows
 
 Func ProcessWindow()
 	; Get the window title and handle for the currently active window
@@ -936,7 +348,157 @@ Func ProcessWindow()
 	If $sMessageText <> "" Then DisplayMessage($sMessageText)
 EndFunc
 
+Func WindowPosition($hWnd)
+	; Get window position
+	Local $aWinPos = WinGetPos($hWnd)
+	If @error Then Return SetError(1, 0, 0)
+	If Not IsArray($aWinPos) Or UBound($aWinPos) < 4 Then Return SetError(2, 0, 0)
+
+	; Set the window frame variables and calculate the area of the window
+	Local $iWindowX = $aWinPos[0], $iWindowY = $aWinPos[1]
+	Local $iWindowWidth = $aWinPos[2], $iWindowHeight = $aWinPos[3]
+	Local $iWindowArea = $iWindowWidth * $iWindowHeight
+
+	; Get borders from registry
+	Local $aBorders = GetWindowBorders()
+	If @error Then
+		Local $aBorders[2] = [1, 3] ; Error case
+	EndIf
+
+	; Extract border values
+	Local $iBorderTop = $aBorders[0] ; Title Bar + Padded Border
+	Local $iBorderRight = $aBorders[1]
+	Local $iBorderBottom = $aBorders[0]
+	Local $iBorderLeft = $aBorders[1]
+
+	; Calculate client area
+	Local $iClientX = $iWindowX + $iBorderLeft
+	Local $iClientY = $iWindowY + $iBorderTop
+	Local $iClientWidth = $iWindowWidth - ($iBorderLeft + $iBorderRight)
+	Local $iClientHeight = $iWindowHeight - ($iBorderTop + $iBorderBottom)
+
+	; ==========
+
+	; Get client rectangle size
+	Local $tClientRect = _WinAPI_GetClientRect($hWnd)
+	Local $iClientRectWidth = DllStructGetData($tClientRect, 3)
+	Local $iClientRectHeight = DllStructGetData($tClientRect, 4)
+
+	; Create a struct to hold the converted client position
+	Local $tPoint = DllStructCreate("int X; int Y")
+	DllStructSetData($tPoint, "X", 0)
+	DllStructSetData($tPoint, "Y", 0)
+
+	; Convert client (0,0) to absolute screen coordinates
+	_WinAPI_ClientToScreen($hWnd, DllStructGetPtr($tPoint))
+
+	Local $iClientRectX = DllStructGetData($tPoint, "X")
+	Local $iClientRectY = DllStructGetData($tPoint, "Y")
+
+	; ==========
+
+	; Retrieve all monitors
+	Local $aMonitors = _WinAPI_EnumDisplayMonitors()
+	If Not IsArray($aMonitors) Then Return SetError(2, 0, 0)
+
+	Local $bestMonitor = -1, $maxCoverage = 0
+	Local $aMonitor[6] = [0, 0, 0, 0, 0, 0]
+
+	For $i = 1 To $aMonitors[0][0]
+		Local $hMonitor = $aMonitors[$i][0]
+		Local $aMonitorInfo = _WinAPI_GetMonitorInfo($hMonitor)
+		If @error Or Not IsArray($aMonitorInfo) Then ContinueLoop
+
+		Local $iMonitorLeft = DllStructGetData($aMonitorInfo[0], "Left")
+		Local $iMonitorTop = DllStructGetData($aMonitorInfo[0], "Top")
+		Local $iMonitorRight = DllStructGetData($aMonitorInfo[0], "Right")
+		Local $iMonitorBottom = DllStructGetData($aMonitorInfo[0], "Bottom")
+
+		; Calculate intersection area
+		Local $iOverlapLeft = ($iWindowX > $iMonitorLeft) ? $iWindowX : $iMonitorLeft
+		Local $iOverlapTop = ($iWindowY > $iMonitorTop) ? $iWindowY : $iMonitorTop
+		Local $iOverlapRight = ($iWindowX + $iWindowWidth < $iMonitorRight) ? ($iWindowX + $iWindowWidth) : $iMonitorRight
+		Local $iOverlapBottom = ($iWindowY + $iWindowHeight < $iMonitorBottom) ? ($iWindowY + $iWindowHeight) : $iMonitorBottom
+
+		Local $iOverlapWidth = $iOverlapRight - $iOverlapLeft
+		Local $iOverlapHeight = $iOverlapBottom - $iOverlapTop
+
+		If $iOverlapWidth > 0 And $iOverlapHeight > 0 Then
+			Local $iOverlapArea = $iOverlapWidth * $iOverlapHeight
+			Local $iCoverage = ($iOverlapArea / $iWindowArea) * 100
+
+			; Keep track of the monitor with the most coverage
+			If $iCoverage > $maxCoverage Then
+				$maxCoverage = $iCoverage
+				$bestMonitor = $hMonitor
+				$aMonitor[0] = $iMonitorLeft
+				$aMonitor[1] = $iMonitorTop
+				$aMonitor[2] = $iMonitorRight - $iMonitorLeft
+				$aMonitor[3] = $iMonitorBottom - $iMonitorTop
+				$aMonitor[4] = $iCoverage
+				$aMonitor[5] = $i
+			EndIf
+		EndIf
+	Next
+
+	; Determine if the window is fullscreen
+	Local $bWindowFullscreen = False
+	If $iWindowX = $aMonitor[0] And $iWindowY = $aMonitor[1] And _
+	$iWindowWidth = $aMonitor[2] And $iWindowHeight = $aMonitor[3] And _
+	$iClientRectX = $aMonitor[0] And $iClientRectY = $aMonitor[1] And _
+	$iClientRectWidth = $aMonitor[2] And $iClientRectHeight = $aMonitor[3] Then
+		$bWindowFullscreen = True
+	EndIf
+
+	; ==========
+
+	Local $aWindow[4] = [$iWindowX, $iWindowY, $iWindowWidth, $iWindowHeight]
+	Local $aBorder[4] = [$iBorderTop, $iBorderRight, $iBorderBottom, $iBorderLeft]
+	Local $aClient[4] = [$iClientX, $iClientY, $iClientWidth, $iClientHeight]
+	Local $aClientRect[4] = [$iClientRectX, $iClientRectY, $iClientRectWidth, $iClientRectHeight]
+	Local $aFlags = $bWindowFullscreen
+
+	If $bestMonitor = -1 Then Return SetError(3, 0, 0)
+	Local $aReturn[6] = [$aMonitor, $aWindow, $aBorders, $aClient, $aClientRect, $aFlags]
+	Return $aReturn
+EndFunc
+
+Func GetWindowBorders()
+	Local $sRegKey = "HKEY_CURRENT_USER\Control Panel\Desktop\WindowMetrics"
+
+	; Read values from registry
+	Local $iBorderWidth = RegRead($sRegKey, "BorderWidth")
+	Local $iPaddedBorderWidth = RegRead($sRegKey, "PaddedBorderWidth")
+
+	If @error Then Return SetError(1, 0, 0) ; Registry keys missing
+
+	; Convert from twips (-1 twip = 1/20th of a pixel)
+	$iBorderWidth = Abs($iBorderWidth) / 20
+	$iPaddedBorderWidth = Abs($iPaddedBorderWidth) / 20
+
+	; Apply DPI scaling
+	Local $iDPI = _WinAPI_GetDPI()
+	$iBorderWidth = Round($iBorderWidth * ($iDPI / 96))
+	$iPaddedBorderWidth = Round($iPaddedBorderWidth * ($iDPI / 96))
+
+	Local $return[2] = [$iBorderWidth, $iPaddedBorderWidth]
+	Return $return
+EndFunc
+
+Func _WinAPI_GetDPI()
+	Local $hDC = _WinAPI_GetDC(0)
+	Local $iDPI = DllCall("gdi32.dll", "int", "GetDeviceCaps", "handle", $hDC, "int", 88) ; 88 = LOGPIXELSX
+	_WinAPI_ReleaseDC(0, $hDC)
+	Return $iDPI[0]
+EndFunc
+
+#EndRegion
+; =====
+
 ; ========== ========== ========== ========== ==========
+
+; =====
+#Region CursorLock
 
 Func ToggleCursorLock()
 	; Prevent multiple presses
@@ -969,7 +531,7 @@ Func ToggleCursorLock()
 
 	; Retrieve window position and monitor coverage
 	Local $hWnd = 0
-	If $g_hActiveGameWnd <> 0 Then 
+	If $g_hActiveGameWnd <> 0 Then
 		$hWnd = $g_hActiveGameWnd
 	ElseIf $g_hLastHwnd <> 0 Then
 		$hWnd = $g_hLastHwnd
@@ -1018,7 +580,7 @@ Func ToggleCursorLock()
 			Local $aFullGameOffsets = StringSplit($g_aGames[$game][3], ",", 2)
 			If UBound($aFullGameOffsets) <> 4 Then $aFullGameOffsets = [0, 0, 0, 0]
 		Else
-				$aFullGameOffsets = False
+			$aFullGameOffsets = False
 		EndIf
 
 		$iTop = $aWindow[1] + $iBorder
@@ -1118,7 +680,262 @@ Func ResetCursorLock()
 	$bHotkeyLock = False
 EndFunc
 
+#EndRegion
+; =====
+
 ; ========== ========== ========== ========== ==========
+
+; =====
+#Region DisplayMessage
+
+Global Const $GDIP_TEXTRENDERINGHINT_ANTIALIASGRIDFIT = 3 ; Specifies that a character is drawn using its antialiased glyph bitmap and hinting
+
+Global $hGDIP = 0
+Global $hGUI = 0, $hGraphic = 0
+Global $iMessagePadding = 10
+Global $iMessageTimer
+Global $iMessageDuration = 0
+
+Global $hClearMessageCallback = 0
+Global $iClearMessageID = 0
+
+Func DisplayMessage($sText, $iDuration = $configDuration, $sFontName = $configFont, $iFontSize = $configFontSize, $iOpacity = $configOpacity)
+	ClearMessageTimerStop()
+	$sText = StringStripWS($sText, 3)
+
+	Local $aTextSize = _StringInPixelsNoGUI($sText, $sFontName, $iFontSize, 0)
+	Local $iTextWidth = Ceiling($aTextSize[0]) + 3 + ($iMessagePadding * 2)
+	Local $iTextHeight = Ceiling($aTextSize[1]) + ($iMessagePadding * 2)
+
+	Local Const $LWA_ALPHA = 0x00000002
+
+	; Get active window handle
+	Local $hWnd = WinGetHandle("[ACTIVE]")
+	If @error Then $hWnd = 0
+	Local $aWindowPosition = WindowPosition($hWnd)
+	Local $aRect[4]
+	If @error = 0 And IsArray($aWindowPosition) And IsArray($aWindowPosition[1]) Then
+		$aRect = $aWindowPosition[0] ; Assign the array
+	Else
+		$aRect[0] = 0
+		$aRect[1] = 0
+		$aRect[2] = @DesktopWidth
+		$aRect[3] = @DesktopHeight
+		; = [0, 0, @DesktopWidth, @DesktopHeight] ; Default values
+	EndIf
+
+	; Calculate message position centered on detected monitor
+	Local $iMessageX = $aRect[0] + (($aRect[2] - $iTextWidth) / 2)
+	Local $iMessageY = $aRect[1] + (($aRect[3] - $iTextHeight) / 2)
+
+	; Create GUI
+	If $hGUI = 0 Then
+		$hGUI = GUICreate("Browser Cursor Lock", $iTextWidth, $iTextHeight, $iMessageX, $iMessageY, $WS_POPUP, _
+						BitOR($WS_EX_TOPMOST, $WS_EX_LAYERED, $WS_EX_TOOLWINDOW, $WS_EX_NOACTIVATE))
+
+		DllCall("user32.dll", "long", "SetWindowLong", "hwnd", $hGUI, "int", $GWL_EXSTYLE, "long", _
+				BitOR($WS_EX_NOACTIVATE, $WS_EX_TOOLWINDOW, $WS_EX_TRANSPARENT, $WS_EX_LAYERED))
+
+		; Set Opacity
+		DllCall("user32.dll", "bool", "SetLayeredWindowAttributes", "hwnd", $hGUI, "dword", 0, "byte", $iOpacity, "dword", $LWA_ALPHA)
+
+		WinSetOnTop($hGUI, "", 1)
+		GUISetState(@SW_SHOWNA, $hGUI)
+	Else
+		; Move existing message window
+		Local Const $SWP_NOZORDER = 0x0004
+		DllCall("user32.dll", "bool", "SetWindowPos", "hwnd", $hGUI, "hwnd", 0, "int", $iMessageX, "int", $iMessageY, _
+				"int", $iTextWidth + 100, "int", $iTextHeight, "uint", $SWP_NOZORDER)
+
+		; Set Opacity
+		DllCall("user32.dll", "bool", "SetLayeredWindowAttributes", "hwnd", $hGUI, "dword", 0, "byte", $iOpacity, "dword", $LWA_ALPHA)
+
+		; Clear the existing drawing
+		If $hGraphic <> 0 Then
+			_GDIPlus_GraphicsClear($hGraphic)
+			_GDIPlus_GraphicsDispose($hGraphic)
+		EndIf
+
+		_WinAPI_RedrawWindow($hGUI, 0, 0, BitOR($RDW_INVALIDATE, $RDW_UPDATENOW))
+	EndIf
+
+	$hGraphic = _GDIPlus_GraphicsCreateFromHWND($hGUI)
+	_GDIPlus_GraphicsSetTextRenderingHint($hGraphic, $GDIP_TEXTRENDERINGHINT_ANTIALIASGRIDFIT)
+
+	Local $hBrush = _GDIPlus_BrushCreateSolid(0x7F000000)
+	Local $hFormat = _GDIPlus_StringFormatCreate()
+	Local $aRet = DllCall($hGDIP, "int", "GdipSetStringFormatAlign", "ptr", $hFormat, "int", 0)
+	If @error Then Return SetError(1, 0, 0)
+	If @error Or Not IsArray($aRet) Or $aRet[0] <> 0 Then
+		MsgBox(16, "Error", "Failed to set StringFormat flags.")
+	EndIf
+
+	Local $aRet = DllCall($hGDIP, "int", "GdipSetStringFormatFlags", "ptr", $hFormat, "int", 0)
+	If @error Or Not IsArray($aRet) Or $aRet[0] <> 0 Then
+		MsgBox(16, "Error", "Failed to set StringFormat flags.")
+	EndIf
+
+	Local $hFamily = _GDIPlus_FontFamilyCreate($sFontName)
+	Local $hFont = _GDIPlus_FontCreate($hFamily, $iFontSize, 0)
+
+	Local $tLayout = _GDIPlus_RectFCreate($iMessagePadding - 3, $iMessagePadding, $aTextSize[0] + 100, $aTextSize[1])
+	Local $hRegion = _WinAPI_CreateRoundRectRgn(0, 0, $iTextWidth, $iTextHeight, $iMessagePadding * 2, $iMessagePadding * 2)
+
+	_WinAPI_RedrawWindow($hGUI, 0, 0, BitOR($RDW_INVALIDATE, $RDW_UPDATENOW))
+
+	; Draw the rounded corners
+	_WinAPI_SetWindowRgn($hGUI, $hRegion)
+
+	; Draw the updated string
+	_GDIPlus_GraphicsDrawStringEx($hGraphic, $sText, $hFont, $tLayout, $hFormat, $hBrush)
+
+	_WinAPI_RedrawWindow($hGUI, 0, 0, BitOR($RDW_INVALIDATE, $RDW_UPDATENOW))
+
+	; Cleanup GDI+ objects
+	_GDIPlus_BrushDispose($hBrush)
+	_GDIPlus_StringFormatDispose($hFormat)
+	_GDIPlus_FontDispose($hFont)
+	_GDIPlus_FontFamilyDispose($hFamily)
+	_WinAPI_DeleteObject($hRegion)
+
+	; Restart timer
+	$iMessageDuration = $iDuration
+	$iMessageTimer = TimerInit()
+	ClearMessageTimerStart()
+EndFunc
+
+Func ClearMessageTimerStart()
+	If @AutoItX64 Then
+		; 64-bit: third param must be "ptr" or "uint_ptr"
+		$hClearMessageCallback = DllCallbackRegister("ClearMessageTimer", "int", "hwnd;uint;ptr;dword")
+	Else
+		; 32-bit: third param is just "uint"
+		$hClearMessageCallback = DllCallbackRegister("ClearMessageTimer", "int", "hwnd;uint;uint;dword")
+	EndIf
+
+	$iClearMessageID = DllCall("User32.dll", "int", "SetTimer", _
+		"hwnd", 0, _
+		"int", 0, _
+		"int", 50, _
+		"ptr", DllCallbackGetPtr($hClearMessageCallback))
+
+	If @error Or Not IsArray($iClearMessageID) Then
+		MsgBox(16, "Timer Error", "Failed to set the ClearMessage timer.")
+		$iClearMessageID = 0
+		DllCallbackFree($hClearMessageCallback)
+		$hClearMessageCallback = 0
+	EndIf
+EndFunc
+
+Func ClearMessageTimerStop()
+	; If the timer is running, kill it
+	If $iClearMessageID And IsArray($iClearMessageID) Then
+		DllCall("User32.dll", "int", "KillTimer", "hwnd", 0, "int", $iClearMessageID[0])
+	EndIf
+
+	; And free the callback
+	If $hClearMessageCallback <> 0 Then
+		DllCallbackFree($hClearMessageCallback)
+	EndIf
+
+	$iClearMessageID = 0
+	$hClearMessageCallback = 0
+EndFunc
+
+Func ClearMessageTimer($hWnd, $uMsg, $idEvent, $dwTime)
+	If $hGUI <> 0 Then
+		Local $elapsed = TimerDiff($iMessageTimer)
+		If $elapsed >= $iMessageDuration Then ClearMessage()
+	EndIf
+	Return 0
+EndFunc
+
+Func ClearMessage()
+	ClearMessageTimerStop()
+	If $hGUI <> 0 Then
+		; Clear timer
+		$iMessageTimer = Null
+		$iMessageDuration = 0
+
+		GUISetState(@SW_UNLOCK, $hGUI)
+
+		; Remove the GUI
+		GUIDelete($hGUI)
+
+		; Clean up resources
+		If $hGraphic <> 0 Then
+			_GDIPlus_GraphicsDispose($hGraphic)
+			$hGraphic = 0
+		EndIf
+
+		$hGUI = 0
+	EndIf
+EndFunc
+
+; ========== ========== ========== ========== ==========
+
+Func _StringInPixelsNoGUI($sString, $sFontFamily, $fSize, $iStyle, $iColWidth = 0)
+	; Get the desktop DC
+	Local $hDC = _WinAPI_GetDC(0)
+	; Create a graphics object from the DC
+	Local $hGraphic = _GDIPlus_GraphicsCreateFromHDC($hDC)
+
+	; Set up a measurable character range covering the entire string
+	Local $aRanges[2][2] = [[1]]
+	$aRanges[1][0] = 0
+	$aRanges[1][1] = StringLen($sString)
+
+	; Create a StringFormat object and set it to measure character ranges
+	Local $hFormat = _GDIPlus_StringFormatCreate()
+	_GDIPlus_StringFormatSetMeasurableCharacterRanges($hFormat, $aRanges)
+
+	; Create a font and set the rendering hint
+	Local $hFamily = _GDIPlus_FontFamilyCreate($sFontFamily)
+	Local $hFont = _GDIPlus_FontCreate($hFamily, $fSize, $iStyle)
+	_GDIPlus_GraphicsSetTextRenderingHint($hGraphic, $GDIP_TEXTRENDERINGHINT_ANTIALIASGRIDFIT)
+
+	; If no column width is provided, use a large width
+	If $iColWidth = 0 Then $iColWidth = 1000
+	Local $tLayout = _GDIPlus_RectFCreate(0, 0, $iColWidth, 1000)
+
+	; Measure the character ranges
+	Local $aRegions = _GDIPlus_GraphicsMeasureCharacterRanges($hGraphic, $sString, $hFont, $tLayout, $hFormat)
+	If Not IsArray($aRegions) Then
+		_GDIPlus_FontDispose($hFont)
+		_GDIPlus_FontFamilyDispose($hFamily)
+		_GDIPlus_StringFormatDispose($hFormat)
+		_GDIPlus_GraphicsDispose($hGraphic)
+		_WinAPI_ReleaseDC(0, $hDC)
+		Return
+	EndIf
+
+	Local $aBounds = _GDIPlus_RegionGetBounds($aRegions[1], $hGraphic)
+
+	; Get the measured width and height
+	Local $aWidthHeight[2] = [$aBounds[2], $aBounds[3]]
+
+	; Clean up
+	_GDIPlus_FontDispose($hFont)
+	_GDIPlus_FontFamilyDispose($hFamily)
+	_GDIPlus_StringFormatDispose($hFormat)
+	If IsArray($aRegions) Then
+		For $i = 1 To $aRegions[0]
+			_GDIPlus_RegionDispose($aRegions[$i])
+		Next
+	EndIf
+	_GDIPlus_GraphicsDispose($hGraphic)
+	_WinAPI_ReleaseDC(0, $hDC)
+
+	Return $aWidthHeight
+EndFunc
+
+#EndRegion
+; =====
+
+; ========== ========== ========== ========== ==========
+
+; =====
+#Region About
 
 Global $bAbout = False
 Global $hAboutGUI = 0
@@ -1128,6 +945,8 @@ Global $idLinkPaypal = 0
 Global $idLinkBrave = 0
 
 Global Const $SS_NOTIFY = 0x0100
+Global Const $GUI_FONTUNDERLINE = 1
+Global Const $GUI_CURSOR_HAND = 0
 
 Func ShowAboutWindow()
 	If $bAbout And WinExists($hAboutGUI) Then
@@ -1144,7 +963,7 @@ Func ShowAboutWindow()
 
 	GUICtrlCreateLabel("Browser Cursor Lock", 100, 10, 250, 25)
 	GUICtrlSetFont(-1, 12, 700)
-	GUICtrlCreateLabel("Version: 0.3.0.0", 100, 35, 250, 20)
+	GUICtrlCreateLabel("Version: 1.0.0.0", 100, 35, 250, 20)
 	GUICtrlCreateLabel("Author: Brogan Scott Houston McIntyre", 100, 55, 300, 20)
 
 	; GitHub link label
@@ -1186,7 +1005,24 @@ Func _MakeLabelLinkStyle($id)
 	GUICtrlSetCursor($id, $GUI_CURSOR_HAND) ; Hand cursor
 EndFunc
 
+#EndRegion
+; =====
+
 ; ========== ========== ========== ========== ==========
+
+; =====
+#Region Configuration
+
+Global $configHotkey = ""
+Global $currentHotkey = ""
+Global $bHotkeyLock = False
+
+Global $configFontSize, $configFont, $configOpacity, $configDuration
+Global $configSplashMessages, $configBrowserMessages, $configGameMessages
+Global $configLockCursorFullscreen, $configLockCursorWindowed, $configLockCursorAllTitles
+
+Global $g_sCapturedHotkey = ""
+Global $bCapturing = False
 
 ; When the configuration window opens, make temporary copies
 Global $tmpBrowsers
@@ -1232,7 +1068,8 @@ Func ShowConfigWindow()
 		; ---- Hotkey Configuration ----
 		Local $hHotkeyGroup = GUICtrlCreateGroup("Hotkey Settings", 20, 140, 405, 55)
 			GUICtrlCreateLabel("Set Lock/Unlock Hotkey:", 40, 160, 160, 20)
-			Local $hHotkeyInput = GUICtrlCreateInput($configHotkey, 210, 160, 120, 20)
+			Local $hHotkeyInput = GUICtrlCreateInput($configHotkey, 170, 160, 130, 20)
+			Local $hBtnStart = GUICtrlCreateButton("Start Capture", 310, 160, 100, 20)
 			GUICtrlCreateGroup("", -99, -99, 1, 1) ; Close Hotkey Settings Group
 
 			; ---- Notifications (Message Settings) ----
@@ -1418,6 +1255,11 @@ Func ShowConfigWindow()
 				GUIDelete($hConfigGUI)
 				TraySetClick(9)
 				ExitLoop
+
+			Case $hBtnStart
+				$bCapturing = True
+				GUICtrlSetData($hHotkeyInput, "")
+				_CaptureHotkey($hHotkeyInput)
 
 			Case $hTab
 				Local $aGroups[3] = [$hGeneralGroup, $hBrowserGroup, $hGameGroup]
@@ -1869,7 +1711,7 @@ Func _SaveConfig($hHotkeyInput, $hLockFullscreen, $hLockWindowed, $hLockAllTitle
 
 	; Reset the hotkey if it changed
 	If $currentHotkey <> "" And $currentHotkey <> $configHotkey Then
-		HotKeySet($currentHotkey) ; remove old hotkey
+		HotKeySet($currentHotkey)
 		Local $result = HotKeySet($configHotkey, "ToggleCursorLock")
 		If $result = 0 Then
 			MsgBox(16, "HotKey Error", "New hotkey '" & $configHotkey & "' could not be set.")
@@ -1923,6 +1765,513 @@ Func _GetFontList()
 		Return $aResult
 	EndIf
 EndFunc
+
+; ========== ========== ========== ========== ==========
+
+Func _GetConfig()
+	; Read hotkey setting
+	$configHotkey = IniRead($configPath, "general", "hotkey", "{NUMPADSUB}")
+	If StringStripWS($configHotkey, 3) = "" Then $configHotkey = "{NUMPADSUB}"
+
+	; Read cursor lock settings
+	$configLockCursorFullscreen = Number(IniRead($configPath, "cursor", "lock_cursor_fullscreen", "1"))
+	$configLockCursorWindowed = Number(IniRead($configPath, "cursor", "lock_cursor_windowed", "1"))
+	$configLockCursorAllTitles = Number(IniRead($configPath, "cursor", "lock_all_titles", "1"))
+
+	; Read message display settings
+	$configSplashMessages = Number(IniRead($configPath, "notifications", "splash_messages", "1"))
+	$configBrowserMessages = Number(IniRead($configPath, "notifications", "browser_messages", "1"))
+	$configGameMessages = Number(IniRead($configPath, "notifications", "game_messages", "1"))
+
+	; If there's an existing hotkey, remove it before setting a new one
+	If $currentHotkey <> "" And $currentHotkey <> $configHotkey Then
+		; Unset the old hotkey
+		HotKeySet($currentHotkey)
+
+		; Attempt to set new hotkey
+		Local $result = HotKeySet($configHotkey, "ToggleCursorLock")
+		If $result = 0 Then
+			MsgBox(16, "HotKey Error", "Configured hotkey '" & $configHotkey & "' could not be set.")
+			$result = HotKeySet($currentHotkey, "ToggleCursorLock")
+			$configHotkey = $currentHotkey
+		Else
+			$currentHotkey = $configHotkey
+		EndIf
+	EndIf
+
+	; Read and validate font size (default 24)
+	$configFontSize = Number(IniRead($configPath, "message", "fontsize", "24"))
+	If $configFontSize <= 0 Then $configFontSize = 24
+
+	; Read and validate message duration (default 2000 ms)
+	$configDuration = Number(IniRead($configPath, "message", "duration", "2000"))
+	If $configDuration <= 0 Then $configDuration = 2000
+
+	; Read and validate font family (default "Arial")
+	$configFont = IniRead($configPath, "message", "fontfamily", "Arial")
+	If StringStripWS($configFont, 3) = "" Then $configFont = "Arial"
+
+	; Test if the font exists by attempting to create a FontFamily object.
+	Local $hTestFamily = _GDIPlus_FontFamilyCreate($configFont)
+	If @error Then
+		MsgBox(16, "Font Error", "Configured font '" & $configFont & "' does not exist. Reverting to default 'Arial'.")
+		$configFont = "Arial"
+	Else
+		_GDIPlus_FontFamilyDispose($hTestFamily)
+	EndIf
+
+	; Read and validate the message opacity (default 150)
+	$configOpacity = Number(IniRead($configPath, "message", "opacity", "150"))
+	If $configOpacity <= 0 Then $configOpacity = 150
+	If $configOpacity >= 256 Then $configOpacity = 255
+
+	; ========== ========== ==========
+
+	; Default browser data (used if missing from INI)
+	Local $defaultBrowsers = "brave,chrome,firefox,edge"
+	Local $defaultBrowserData = _
+		[ _
+			["brave", "Brave", ".*Brave$", "0,0,0,0", "0,0,0,0"], _
+			["chrome", "Chrome", ".*Google Chrome$", "0,0,0,0", "0,0,0,0"], _
+			["firefox", "Firefox", ".*Mozilla Firefox$", "0,0,0,0", "0,0,0,0"], _
+			["edge", "Edge", ".*Microsoft\s*.*Edge$", "0,0,0,0", "0,0,0,0"] _
+		]
+
+	; Read browser IDs from the INI file
+	Local $sBrowsers = IniRead($configPath, "browsers", "ids", $defaultBrowsers)
+	If StringStripWS($sBrowsers, 3) = "" Then $sBrowsers = $defaultBrowsers
+
+	; Convert to an array
+	Local $aBrowserIDs = StringSplit($sBrowsers, ",", 2)
+
+	; Initialize browsers array
+	Global $g_aBrowsers[UBound($aBrowserIDs)][5]
+
+	; Loop through browser IDs and fetch data
+	For $i = 0 To UBound($aBrowserIDs) - 1
+		Local $browserID = StringStripWS($aBrowserIDs[$i], 3)
+		If $browserID = "" Then ContinueLoop
+
+		; Find default values (if any)
+		Local $defaultDisplay = $browserID
+		Local $defaultTitle = $browserID
+		Local $defaultFullOffsets = "0,0,0,0"
+		Local $defaultWindowOffsets = "0,0,0,0"
+
+		For $j = 0 To UBound($defaultBrowserData) - 1
+			If $defaultBrowserData[$j][0] = $browserID Then
+				$defaultDisplay = $defaultBrowserData[$j][1]
+				$defaultTitle = $defaultBrowserData[$j][2]
+				$defaultFullOffsets = $defaultBrowserData[$j][3]
+				$defaultWindowOffsets = $defaultBrowserData[$j][4]
+				ExitLoop
+			EndIf
+		Next
+
+		; Read display name (or set default)
+		Local $browserDisplay = IniRead($configPath, $browserID & "_browser", "name", $defaultDisplay)
+
+		; Read title regex(or set default)
+		Local $browserTitle = IniRead($configPath, $browserID & "_browser", "title", $defaultTitle)
+
+		; Read fullscreen offsets (or set default)
+		Local $sFullOffsets = IniRead($configPath, $browserID & "_browser", "fullscreen_offsets", $defaultFullOffsets)
+
+		; Read windowed offsets (or set default)
+		Local $sWindowOffsets = IniRead($configPath, $browserID & "_browser", "windowed_offsets", $defaultWindowOffsets)
+
+		; Store the browser
+		$g_aBrowsers[$i][0] = $browserID
+		$g_aBrowsers[$i][1] = $browserDisplay
+		$g_aBrowsers[$i][2] = $browserTitle
+		$g_aBrowsers[$i][3] = $sFullOffsets
+		$g_aBrowsers[$i][4] = $sWindowOffsets
+	Next
+
+	; ========== ========== ==========
+
+	; Default game data (used if missing from INI)
+	Local $defaultGames = "agar,paper2,digdig,snake"
+	Local $defaultGamesData = _
+		[ _
+			["agar", "Agar.io", "(?i)agar.io", "0,0,90,0", "0,0,90,0"], _
+			["paper2", "Paper 2", "(?i)paper", "0,0,0,0", "0,0,0,0"], _
+			["digdig", "Digdig", "(?i)digdig.io", "0,0,0,0", "0,0,0,0"], _
+			["snake", "Snake", "(?i)snake.io", "0,0,0,0", "0,0,0,0"] _
+		]
+
+	; Read game IDs from the INI file
+	Local $sGames = IniRead($configPath, "games", "ids", $defaultGames)
+	If StringStripWS($sGames, 3) = "" Then $sGames = $defaultGames
+
+	; Convert to an array
+	Local $aGameIDs = StringSplit($sGames, ",", 2)
+
+	; Initialize games array
+	Global $g_aGames[UBound($aGameIDs)][5]
+
+	; Loop through game IDs and fetch data
+	For $i = 0 To UBound($aGameIDs) - 1
+		Local $gameID = StringStripWS($aGameIDs[$i], 3)
+		If $gameID = "" Then ContinueLoop
+
+		; Find default values (if any)
+		Local $defaultDisplay = $gameID
+		Local $defaultTitle = $gameID
+		Local $defaultFullOffsets = "0,0,0,0"
+		Local $defaultWindowOffsets = "0,0,0,0"
+
+		For $j = 0 To UBound($defaultGamesData) - 1
+			If $defaultGamesData[$j][0] = $gameID Then
+				$defaultDisplay = $defaultGamesData[$j][1]
+				$defaultTitle = $defaultGamesData[$j][2]
+				$defaultFullOffsets = $defaultGamesData[$j][3]
+				$defaultWindowOffsets = $defaultGamesData[$j][4]
+				ExitLoop
+			EndIf
+		Next
+
+		; Read display name (or set default)
+		Local $gameDisplay = IniRead($configPath, $gameID & "_game", "name", $defaultDisplay)
+
+		; Read title regex(or set default)
+		Local $gameTitle = IniRead($configPath, $gameID & "_game", "title", $defaultTitle)
+
+		; Read fullscreen offsets (or set default)
+		Local $sFullOffsets = IniRead($configPath, $gameID & "_game", "fullscreen_offsets", $defaultFullOffsets)
+
+		; Read windowed offsets (or set default)
+		Local $sWindowOffsets = IniRead($configPath, $gameID & "_game", "windowed_offsets", $defaultWindowOffsets)
+
+		; Store in game array
+		$g_aGames[$i][0] = $gameID
+		$g_aGames[$i][1] = $gameDisplay
+		$g_aGames[$i][2] = $gameTitle
+		$g_aGames[$i][3] = $sFullOffsets
+		$g_aGames[$i][4] = $sWindowOffsets
+	Next
+EndFunc
+
+#EndRegion
+; =====
+
+; ========== ========== ========== ========== ==========
+
+; =====
+#Region HotKeyCapture
+
+Func _CaptureHotkey($hInput)
+	Local $lastKeys = ""
+
+	$g_sCapturedHotkey = ""
+	GUICtrlSetBkColor($hInput, 0xFFFF00) ; Yellow glow to indicate active capture
+
+	While $bCapturing
+		Dim $pressedKeys[0] ; Initialize fresh for each loop iteration
+		Dim $modifiers[0], $regularKeys[0]
+
+		; Detect multiple key presses
+		For $i = 1 To 255
+			If _IsPressed(Hex($i, 2)) Then
+				Local $keyName = _GetKeyName(Hex($i, 2))
+				If $keyName <> "" And Not _ArrayContains($pressedKeys, $keyName) Then
+					_ArrayAdd($pressedKeys, $keyName)
+				EndIf
+			EndIf
+		Next
+
+		; If keys are released, finalize capture
+		If UBound($pressedKeys) = 0 And $lastKeys <> "" Then
+			$bCapturing = False
+			GUICtrlSetBkColor($hInput, _WinAPI_GetSysColor($COLOR_WINDOW)) ; Restore the original color
+			GUICtrlSetData($hInput, ConvertToHotkeyString($g_sCapturedHotkey))
+			Return
+		EndIf
+
+		; Sort into modifier keys and normal keys
+		For $i = 0 To UBound($pressedKeys) - 1
+			Switch $pressedKeys[$i]
+				Case "LCTRL", "RCTRL", "CTRL"
+					_ArrayAdd($modifiers, $pressedKeys[$i])
+				Case "LALT", "RALT", "ALT"
+					_ArrayAdd($modifiers, $pressedKeys[$i])
+				Case "LSHIFT", "RSHIFT", "SHIFT"
+					_ArrayAdd($modifiers, $pressedKeys[$i])
+				Case "LWIN", "RWIN", "WIN"
+					_ArrayAdd($modifiers, $pressedKeys[$i])
+				Case Else
+					_ArrayAdd($regularKeys, $pressedKeys[$i])
+			EndSwitch
+		Next
+
+		_RemoveDuplicates($modifiers)
+		; Filter out generic keys if a side-specific key is present
+		$modifiers = _FilterModifiers($modifiers)
+
+		; Merge ordered modifiers + normal keys
+		Dim $orderedKeys[0]
+		_ArrayMerge($orderedKeys, $modifiers)
+		_ArrayMerge($orderedKeys, $regularKeys)
+
+		If UBound($orderedKeys) > 0 Then
+			$g_sCapturedHotkey = _StringJoin($orderedKeys, " + ")
+			GUICtrlSetData($hInput, ConvertToHotkeyString($g_sCapturedHotkey))
+			$lastKeys = $g_sCapturedHotkey
+		EndIf
+
+		Sleep(100)
+	WEnd
+EndFunc
+
+; This function removes generic keys (e.g., "ALT") if a side-specific one exists (e.g., "LALT" or "RALT")
+Func _FilterModifiers(ByRef $modifiers)
+	Local $filtered[0]
+	For $i = 0 To UBound($modifiers) - 1
+		Local $mod = $modifiers[$i]
+		Switch $mod
+			Case "CTRL"
+				; If either LCTRL or RCTRL is in the array, skip generic CTRL
+				If _ArrayContains($modifiers, "LCTRL") Or _ArrayContains($modifiers, "RCTRL") Then ContinueLoop
+			Case "ALT"
+				If _ArrayContains($modifiers, "LALT") Or _ArrayContains($modifiers, "RALT") Then ContinueLoop
+			Case "SHIFT"
+				If _ArrayContains($modifiers, "LSHIFT") Or _ArrayContains($modifiers, "RSHIFT") Then ContinueLoop
+			Case "WIN"
+				If _ArrayContains($modifiers, "LWIN") Or _ArrayContains($modifiers, "RWIN") Then ContinueLoop
+		EndSwitch
+		_ArrayAdd($filtered, $mod)
+	Next
+	Return $filtered
+EndFunc
+
+Func _GetKeyName($hexKey)
+	Local $keyMap = ObjCreate("Scripting.Dictionary")
+
+	; Mouse Buttons
+	;$keyMap.Add("01", "LMB")
+	;$keyMap.Add("02", "RMB")
+	;$keyMap.Add("04", "MMB")
+	;$keyMap.Add("05", "MB4")
+	;$keyMap.Add("06", "MB5")
+
+	; Common Keys
+	$keyMap.Add("03", "CANCEL")
+	$keyMap.Add("08", "BACKSPACE")
+	$keyMap.Add("09", "TAB")
+	$keyMap.Add("0D", "ENTER")
+	$keyMap.Add("10", "SHIFT")
+	$keyMap.Add("11", "CTRL")
+	$keyMap.Add("12", "ALT")
+	$keyMap.Add("1B", "ESC")
+	$keyMap.Add("20", "SPACE")
+	$keyMap.Add("5B", "LWIN")
+	$keyMap.Add("5C", "RWIN")
+
+	; Additional Navigation Keys
+	$keyMap.Add("21", "PGUP")
+	$keyMap.Add("22", "PGDN")
+	$keyMap.Add("23", "END")
+	$keyMap.Add("24", "HOME")
+	$keyMap.Add("25", "LEFT")
+	$keyMap.Add("26", "UP")
+	$keyMap.Add("27", "RIGHT")
+	$keyMap.Add("28", "DOWN")
+	$keyMap.Add("2D", "INSERT")
+	$keyMap.Add("2E", "DELETE")
+
+	; Additional System Keys
+	$keyMap.Add("2C", "PRTSC")
+	$keyMap.Add("13", "PAUSE")
+	$keyMap.Add("14", "CAPSLOCK")
+	$keyMap.Add("91", "SCROLLLOCK")
+	$keyMap.Add("5D", "APPS")
+
+	; Numpad Keys
+	$keyMap.Add("60", "NUMPAD0")
+	$keyMap.Add("61", "NUMPAD1")
+	$keyMap.Add("62", "NUMPAD2")
+	$keyMap.Add("63", "NUMPAD3")
+	$keyMap.Add("64", "NUMPAD4")
+	$keyMap.Add("65", "NUMPAD5")
+	$keyMap.Add("66", "NUMPAD6")
+	$keyMap.Add("67", "NUMPAD7")
+	$keyMap.Add("68", "NUMPAD8")
+	$keyMap.Add("69", "NUMPAD9")
+	$keyMap.Add("6A", "NUMPADMULT")
+	$keyMap.Add("6B", "NUMPADADD")
+	$keyMap.Add("6D", "NUMPADSUB")
+	$keyMap.Add("6E", "NUMPADDECIMAL")
+	$keyMap.Add("6F", "NUMPADDIV")
+
+	; OEM / Punctuation Keys
+	$keyMap.Add("BA", "SEMICOLON")			; VK_OEM_1 (e.g., ;)
+	$keyMap.Add("BB", "EQUALS")				; VK_OEM_PLUS (e.g., =)
+	$keyMap.Add("BC", "COMMA")				; VK_OEM_COMMA (e.g., ,)
+	$keyMap.Add("BD", "MINUS")					; VK_OEM_MINUS (e.g., -)
+	$keyMap.Add("BE", "PERIOD")				; VK_OEM_PERIOD (e.g., .)
+	$keyMap.Add("BF", "FORWARD_SLASH")	; VK_OEM_2 (e.g., /)
+	$keyMap.Add("C0", "TILDE")					; VK_OEM_3 (e.g., ~ or `)
+	$keyMap.Add("DB", "OPEN_BRACKET")	; VK_OEM_4 (e.g., [)
+	$keyMap.Add("DC", "BACKSLASH")			; VK_OEM_5 (e.g., \)
+	$keyMap.Add("DD", "CLOSE_BRACKET")	; VK_OEM_6 (e.g., ])
+	$keyMap.Add("DE", "APOSTROPHE")		; VK_OEM_7 (e.g., ')
+	$keyMap.Add("DF", "OEM_8")
+
+	; Media / Special Function Keys
+	;$keyMap.Add("AD", "VOLUME_MUTE")		; Volume Mute
+	;$keyMap.Add("AE", "VOLUME_DOWN")	; Volume Down
+	;$keyMap.Add("AF", "VOLUME_UP")			; Volume Up
+	;$keyMap.Add("B0", "NEXT_TRACK")		; Next Track
+	;$keyMap.Add("B1", "PREV_TRACK")		; Previous Track
+	;$keyMap.Add("B2", "STOP")					; Stop
+	;$keyMap.Add("B3", "PLAY_PAUSE")			; Play/Pause
+
+	; Additional Special Keys
+	;$keyMap.Add("0C", "CLEAR")					; Clear key (often on numpad)
+	;$keyMap.Add("29", "SELECT")				; Select key
+	;$keyMap.Add("5F", "SLEEP")					; Sleep key
+
+	; Browser Keys
+	;$keyMap.Add("A6", "BROWSER_BACK")
+	;$keyMap.Add("A7", "BROWSER_FORWARD")
+	;$keyMap.Add("A8", "BROWSER_REFRESH")
+	;$keyMap.Add("A9", "BROWSER_STOP")
+	;$keyMap.Add("AA", "BROWSER_SEARCH")
+	;$keyMap.Add("AB", "BROWSER_FAVORITES")
+	;$keyMap.Add("AC", "BROWSER_HOME")
+
+	; Launch/Application Keys
+	;$keyMap.Add("B4", "LAUNCH_MAIL")
+	;$keyMap.Add("B5", "LAUNCH_MEDIA_SELECT")
+	;$keyMap.Add("B6", "LAUNCH_APP1")		; Often used for Calculator
+	;$keyMap.Add("B7", "LAUNCH_APP2")		; Additional launch key
+
+	; Additional OEM / Special Keys
+	;$keyMap.Add("E1", "OEM_AX")
+	;$keyMap.Add("E2", "OEM_102")
+	;$keyMap.Add("E5", "PROCESSKEY")
+
+	; Additional Rare Keys
+	;$keyMap.Add("F6", "ATTN")
+	;$keyMap.Add("F7", "CRSEL")
+	;$keyMap.Add("F8", "EXSEL")
+	;$keyMap.Add("F9", "EREOF")
+	;$keyMap.Add("FA", "PLAY")
+	;$keyMap.Add("FB", "ZOOM")
+	;$keyMap.Add("FC", "NONAME")
+	;$keyMap.Add("FD", "PA1")
+	;$keyMap.Add("FE", "OEM_CLEAR")
+
+	; Numbers
+	For $i = 0 To 9
+		$keyMap.Add(Hex(48 + $i, 2), String($i))
+	Next
+
+	; Letters
+	For $i = 0 To 25
+		$keyMap.Add(Hex(65 + $i, 2), Chr(65 + $i))
+	Next
+
+	; Function keys
+	For $i = 1 To 24
+		If $i = 12 Then ContinueLoop ; Skip F12 since it's reserved by Windows.
+		$keyMap.Add(Hex(111 + $i, 2), "F" & $i)
+	Next
+
+	; Modifier Keys
+	$keyMap.Add("A0", "LSHIFT")
+	$keyMap.Add("A1", "RSHIFT")
+	$keyMap.Add("A2", "LCTRL")
+	$keyMap.Add("A3", "RCTRL")
+	$keyMap.Add("A4", "LALT")
+	$keyMap.Add("A5", "RALT")
+
+	If $keyMap.Exists($hexKey) Then Return $keyMap.Item($hexKey)
+
+	Return "KEY_" & $hexKey
+EndFunc
+
+Func _ArrayMerge(ByRef $array, $addArray)
+	For $i = 0 To UBound($addArray) - 1
+		_ArrayAdd($array, $addArray[$i])
+	Next
+EndFunc
+
+Func _ArrayContains($array, $value)
+	For $i = 0 To UBound($array) - 1
+		If $array[$i] = $value Then Return True
+	Next
+	Return False
+EndFunc
+
+Func _StringJoin($array, $separator)
+	Local $result = ""
+	For $i = 0 To UBound($array) - 1
+		$result &= $array[$i] & $separator
+	Next
+	Return StringTrimRight($result, StringLen($separator))
+EndFunc
+
+Func _RemoveDuplicates(ByRef $array)
+	Local $tempArray[0]
+	For $i = 0 To UBound($array) - 1
+		If Not _ArrayContains($tempArray, $array[$i]) Then _ArrayAdd($tempArray, $array[$i])
+	Next
+	$array = $tempArray
+EndFunc
+
+Func _IsPressed($sHexKey, $vDLL = "user32.dll")
+	Local $aCall = DllCall($vDLL, "short", "GetAsyncKeyState", "int", "0x" & $sHexKey)
+	If @error Then Return SetError(@error, @extended, False)
+	Return BitAND($aCall[0], 0x8000) <> 0
+EndFunc
+
+Func ConvertToHotkeyString($sCaptured)
+	; Remove extra whitespace and standardize the separator
+	$sCaptured = StringStripWS($sCaptured, 3)		; trim whitespace from both ends
+	Local $aKeys = StringSplit($sCaptured, "+", 1)	; split on '+'
+	If $aKeys[0] = 0 Then Return ""
+
+	Local $sHotkey = ""
+	Local $bBaseFound = False ; flag to track if we've added a base key
+
+	For $i = 1 To $aKeys[0]
+		Local $sKey = StringUpper(StringStripWS($aKeys[$i], 3))
+		Switch $sKey
+			Case "LCTRL", "RCTRL", "CTRL"
+				$sHotkey &= "^"
+			Case "LALT", "RALT", "ALT"
+				$sHotkey &= "!"
+			Case "LSHIFT", "RSHIFT", "SHIFT"
+				$sHotkey &= "+"
+			Case "LWIN", "RWIN", "WIN"
+				$sHotkey &= "#"
+			Case Else
+				; Only add one non-modifier key (the "base" key)
+				If Not $bBaseFound Then
+					$bBaseFound = True
+					; If it's a single character (letter, digit, punctuation), use it directly (lowercase preferred)
+					If StringLen($sKey) = 1 Then
+						$sHotkey &= StringLower($sKey)
+					Else
+						; For special keys (like F1, ESC, ENTER, etc.), ensure they are enclosed in braces.
+						If StringInStr($sKey, "{") = 0 Then
+							$sHotkey &= "{" & $sKey & "}"
+						Else
+							$sHotkey &= $sKey
+						EndIf
+					EndIf
+				Else
+					; Ignore additional non-modifier keys.
+					ContinueLoop
+				EndIf
+		EndSwitch
+	Next
+	Return $sHotkey
+EndFunc
+
+#EndRegion
+; =====
 
 ; ========== ========== ========== ========== ==========
 
