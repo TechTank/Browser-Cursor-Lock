@@ -21,6 +21,7 @@
 
 ; ========== ========== ========== ========== ==========
 
+Global $bShutdown = False
 OnAutoItExitRegister("ExitScript")
 
 Func _Singleton($sMutexName, $iFlag)
@@ -44,8 +45,6 @@ If @error Then
 	MsgBox(16, "Error", "Another instance is already running.")
 	Exit
 EndIf
-
-Global $bShutdown = False
 
 ; ========== ========== ========== ========== ==========
 
@@ -86,6 +85,9 @@ Func _Main()
 
 	While Not $bShutdown
 		ProcessWindow()
+		If @AutoItX64 Then
+			ProcessCallbackCleanup()
+		EndIf
 
 		; ========== ========== ==========
 
@@ -149,8 +151,14 @@ Func ExitScript()
 		_GDIPlus_Shutdown()
 
 		If $g_hMutex Then
-			DllCall("kernel32.dll", "bool", "ReleaseMutex", "hwnd", $g_hMutex)
-			DllCall("kernel32.dll", "bool", "CloseHandle", "hwnd", $g_hMutex) ; Free the mutex handle
+			; Free the mutex handle
+			If @AutoItX64 Then
+				DllCall("kernel32.dll", "bool", "ReleaseMutex", "ptr", $g_hMutex)
+				DllCall("kernel32.dll", "bool", "CloseHandle", "ptr", $g_hMutex)
+			Else
+				DllCall("kernel32.dll", "bool", "ReleaseMutex", "hwnd", $g_hMutex)
+				DllCall("kernel32.dll", "bool", "CloseHandle", "hwnd", $g_hMutex)
+			EndIf
 			$g_hMutex = 0
 		EndIf
 
@@ -487,7 +495,12 @@ EndFunc
 
 Func _WinAPI_GetDPI()
 	Local $hDC = _WinAPI_GetDC(0)
-	Local $iDPI = DllCall("gdi32.dll", "int", "GetDeviceCaps", "handle", $hDC, "int", 88) ; 88 = LOGPIXELSX
+	If @AutoItX64 Then
+		Local $iDPI = DllCall("gdi32.dll", "int", "GetDeviceCaps", "ptr", $hDC, "int", 88)
+	Else
+		Local $iDPI = DllCall("gdi32.dll", "int", "GetDeviceCaps", "hwnd", $hDC, "int", 88)
+	EndIf
+	; 88 = LOGPIXELSX
 	_WinAPI_ReleaseDC(0, $hDC)
 	Return $iDPI[0]
 EndFunc
@@ -697,7 +710,10 @@ Global $iMessageTimer
 Global $iMessageDuration = 0
 
 Global $hClearMessageCallback = 0
+Global $bCallbackActive = False
 Global $iClearMessageID = 0
+
+Global $aCallbacksToFree[0] 
 
 Func DisplayMessage($sText, $iDuration = $configDuration, $sFontName = $configFont, $iFontSize = $configFontSize, $iOpacity = $configOpacity)
 	ClearMessageTimerStop()
@@ -733,11 +749,18 @@ Func DisplayMessage($sText, $iDuration = $configDuration, $sFontName = $configFo
 		$hGUI = GUICreate("Browser Cursor Lock", $iTextWidth, $iTextHeight, $iMessageX, $iMessageY, $WS_POPUP, _
 						BitOR($WS_EX_TOPMOST, $WS_EX_LAYERED, $WS_EX_TOOLWINDOW, $WS_EX_NOACTIVATE))
 
-		DllCall("user32.dll", "long", "SetWindowLong", "hwnd", $hGUI, "int", $GWL_EXSTYLE, "long", _
-				BitOR($WS_EX_NOACTIVATE, $WS_EX_TOOLWINDOW, $WS_EX_TRANSPARENT, $WS_EX_LAYERED))
+		If @AutoItX64 Then
+			DllCall("user32.dll", "ptr", "SetWindowLongPtr", "hwnd", $hGUI, "int", $GWL_EXSTYLE, "ptr", BitOR($WS_EX_NOACTIVATE, $WS_EX_TOOLWINDOW, $WS_EX_TRANSPARENT, $WS_EX_LAYERED))
+		Else
+			DllCall("user32.dll", "long", "SetWindowLong", "hwnd", $hGUI, "int", $GWL_EXSTYLE, "long", BitOR($WS_EX_NOACTIVATE, $WS_EX_TOOLWINDOW, $WS_EX_TRANSPARENT, $WS_EX_LAYERED))
+		EndIf
 
 		; Set Opacity
-		DllCall("user32.dll", "bool", "SetLayeredWindowAttributes", "hwnd", $hGUI, "dword", 0, "byte", $iOpacity, "dword", $LWA_ALPHA)
+		If @AutoItX64 Then
+			DllCall("user32.dll", "bool", "SetLayeredWindowAttributes", "ptr", $hGUI, "dword", 0, "byte", $iOpacity, "dword", $LWA_ALPHA)
+		Else
+			DllCall("user32.dll", "bool", "SetLayeredWindowAttributes", "hwnd", $hGUI, "dword", 0, "byte", $iOpacity, "dword", $LWA_ALPHA)
+		EndIf
 
 		WinSetOnTop($hGUI, "", 1)
 		GUISetState(@SW_SHOWNA, $hGUI)
@@ -808,16 +831,12 @@ Func ClearMessageTimerStart()
 	If @AutoItX64 Then
 		; 64-bit: third param must be "ptr" or "uint_ptr"
 		$hClearMessageCallback = DllCallbackRegister("ClearMessageTimer", "int", "hwnd;uint;ptr;dword")
+		$iClearMessageID = DllCall("User32.dll", "ptr", "SetTimer", "ptr", 0, "ptr", 0, "int", 50, "ptr", DllCallbackGetPtr($hClearMessageCallback))
 	Else
 		; 32-bit: third param is just "uint"
 		$hClearMessageCallback = DllCallbackRegister("ClearMessageTimer", "int", "hwnd;uint;uint;dword")
+		$iClearMessageID = DllCall("User32.dll", "int", "SetTimer", "hwnd", 0, "int", 0, "int", 50, "ptr", DllCallbackGetPtr($hClearMessageCallback))
 	EndIf
-
-	$iClearMessageID = DllCall("User32.dll", "int", "SetTimer", _
-		"hwnd", 0, _
-		"int", 0, _
-		"int", 50, _
-		"ptr", DllCallbackGetPtr($hClearMessageCallback))
 
 	If @error Or Not IsArray($iClearMessageID) Then
 		MsgBox(16, "Timer Error", "Failed to set the ClearMessage timer.")
@@ -829,23 +848,54 @@ EndFunc
 
 Func ClearMessageTimerStop()
 	; If the timer is running, kill it
-	If $iClearMessageID And IsArray($iClearMessageID) Then
-		DllCall("User32.dll", "int", "KillTimer", "hwnd", 0, "int", $iClearMessageID[0])
+	If IsArray($iClearMessageID) And $iClearMessageID[0] <> 0 Then
+		Local $ret
+		If @AutoItX64 Then
+			; In 64-bit mode, use "ptr" for the timer ID.
+			$ret = DllCall("User32.dll", "ptr", "KillTimer", "ptr", 0, "ptr", $iClearMessageID[0])
+		Else
+			; In 32-bit mode, use "int" for the timer ID.
+			$ret = DllCall("User32.dll", "int", "KillTimer", "hwnd", 0, "int", $iClearMessageID[0])
+		EndIf
 	EndIf
+
+    Local $maxWait = 500, $waitTime = 0
+    While $bCallbackActive And $waitTime < $maxWait
+        Sleep(10)
+        $waitTime += 10
+    WEnd
 
 	; And free the callback
 	If $hClearMessageCallback <> 0 Then
-		DllCallbackFree($hClearMessageCallback)
+		If @AutoItX64 Then
+			_ArrayAdd($aCallbacksToFree, $hClearMessageCallback)
+		Else
+			DllCallbackFree($hClearMessageCallback)
+		EndIf
+		$hClearMessageCallback = 0
 	EndIf
 
 	$iClearMessageID = 0
-	$hClearMessageCallback = 0
+EndFunc
+
+Func ProcessCallbackCleanup()
+    ; Go through the array and free callbacks that are safe to free
+    For $i = UBound($aCallbacksToFree) - 1 To 0 Step -1
+        ; If you have a per-callback active flag, check here.
+        ; For simplicity, we assume a global flag here.
+        If Not $bCallbackActive Then
+            DllCallbackFree($aCallbacksToFree[$i])
+            _ArrayDelete($aCallbacksToFree, $i)
+        EndIf
+    Next
 EndFunc
 
 Func ClearMessageTimer($hWnd, $uMsg, $idEvent, $dwTime)
 	If $hGUI <> 0 Then
+		$bCallbackActive = True
 		Local $elapsed = TimerDiff($iMessageTimer)
 		If $elapsed >= $iMessageDuration Then ClearMessage()
+		$bCallbackActive = False
 	EndIf
 	Return 0
 EndFunc
@@ -857,10 +907,12 @@ Func ClearMessage()
 		$iMessageTimer = Null
 		$iMessageDuration = 0
 
-		GUISetState(@SW_UNLOCK, $hGUI)
+		If WinExists($hGUI) Then
+			GUISetState(@SW_UNLOCK, $hGUI)
 
-		; Remove the GUI
-		GUIDelete($hGUI)
+			; Remove the GUI
+			GUIDelete($hGUI)
+		EndIf
 
 		; Clean up resources
 		If $hGraphic <> 0 Then
@@ -1753,7 +1805,8 @@ EndFunc
 Func _GetFontList()
 	Local $aData = _WinAPI_EnumFontFamilies(0, '', 0, BitOR($DEVICE_FONTTYPE, $TRUETYPE_FONTTYPE), '@*', 1) ; $ANSI_CHARSET = 0
 	If @error Then
-		Return ["Arial", "Times New Roman", "Courier New"]
+		Local $aFonts[3] = ["Arial", "Times New Roman", "Courier New"]
+		Return $aFonts
 	Else
 		Local $iRows = UBound($aData)
 		Local $aResult[$iRows]
