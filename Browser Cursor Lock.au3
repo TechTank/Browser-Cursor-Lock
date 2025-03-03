@@ -1831,10 +1831,10 @@ Func _GetConfig()
 	Local $defaultBrowsers = "brave,chrome,firefox,edge"
 	Local $defaultBrowserData = _
 		[ _
-			["brave", "Brave", ".*Brave$", "0,0,0,0", "0,0,0,0"], _
-			["chrome", "Chrome", ".*Google Chrome$", "0,0,0,0", "0,0,0,0"], _
-			["firefox", "Firefox", ".*Mozilla Firefox$", "0,0,0,0", "0,0,0,0"], _
-			["edge", "Edge", ".*Microsoft\s*.*Edge$", "0,0,0,0", "0,0,0,0"] _
+			["brave", "Brave", ".*Brave$", "77,0,0,0", "0,0,0,0"], _
+			["chrome", "Chrome", ".*Google Chrome$", "83,0,0,0", "0,0,0,0"], _
+			["firefox", "Firefox", ".*Mozilla Firefox$", "81,0,0,0", "0,0,0,0"], _
+			["edge", "Edge", ".*Microsoft\s*.*Edge$", "70,0,0,0", "0,0,0,0"] _
 		]
 
 	; Read browser IDs from the INI file
