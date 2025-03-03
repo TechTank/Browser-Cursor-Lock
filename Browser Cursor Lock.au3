@@ -713,7 +713,7 @@ Global $hClearMessageCallback = 0
 Global $bCallbackActive = False
 Global $iClearMessageID = 0
 
-Global $aCallbacksToFree[0] 
+Global $aCallbacksToFree[0]
 
 Func DisplayMessage($sText, $iDuration = $configDuration, $sFontName = $configFont, $iFontSize = $configFontSize, $iOpacity = $configOpacity)
 	ClearMessageTimerStop()
@@ -859,11 +859,11 @@ Func ClearMessageTimerStop()
 		EndIf
 	EndIf
 
-    Local $maxWait = 500, $waitTime = 0
-    While $bCallbackActive And $waitTime < $maxWait
-        Sleep(10)
-        $waitTime += 10
-    WEnd
+	Local $maxWait = 500, $waitTime = 0
+	While $bCallbackActive And $waitTime < $maxWait
+		Sleep(10)
+		$waitTime += 10
+	WEnd
 
 	; And free the callback
 	If $hClearMessageCallback <> 0 Then
@@ -879,15 +879,13 @@ Func ClearMessageTimerStop()
 EndFunc
 
 Func ProcessCallbackCleanup()
-    ; Go through the array and free callbacks that are safe to free
-    For $i = UBound($aCallbacksToFree) - 1 To 0 Step -1
-        ; If you have a per-callback active flag, check here.
-        ; For simplicity, we assume a global flag here.
-        If Not $bCallbackActive Then
-            DllCallbackFree($aCallbacksToFree[$i])
-            _ArrayDelete($aCallbacksToFree, $i)
-        EndIf
-    Next
+	; Go through the array and free callbacks that are safe to free
+	For $i = UBound($aCallbacksToFree) - 1 To 0 Step -1
+		If Not $bCallbackActive Then
+			DllCallbackFree($aCallbacksToFree[$i])
+			_ArrayDelete($aCallbacksToFree, $i)
+		EndIf
+	Next
 EndFunc
 
 Func ClearMessageTimer($hWnd, $uMsg, $idEvent, $dwTime)
