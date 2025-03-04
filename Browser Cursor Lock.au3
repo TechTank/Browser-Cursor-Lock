@@ -586,11 +586,11 @@ Func ToggleCursorLock()
 			Return
 		EndIf
 
-		Local $aFullBrowserOffsets = StringSplit($g_aBrowsers[$browser][3], ",", 2)
+		Local $aFullBrowserOffsets = StringSplit($g_aBrowsers[$browser][4], ",", 2)
 		If UBound($aFullBrowserOffsets) <> 4 Then $aFullBrowserOffsets = [0, 0, 0, 0]
 
 		If $game <> -1 Then
-			Local $aFullGameOffsets = StringSplit($g_aGames[$game][3], ",", 2)
+			Local $aFullGameOffsets = StringSplit($g_aGames[$game][4], ",", 2)
 			If UBound($aFullGameOffsets) <> 4 Then $aFullGameOffsets = [0, 0, 0, 0]
 		Else
 			$aFullGameOffsets = False
@@ -629,11 +629,11 @@ Func ToggleCursorLock()
 			Return
 		EndIf
 
-		Local $aWindowBrowserOffsets = StringSplit($g_aBrowsers[$browser][4], ",", 2)
+		Local $aWindowBrowserOffsets = StringSplit($g_aBrowsers[$browser][3], ",", 2)
 		If UBound($aWindowBrowserOffsets) <> 4 Then $aWindowBrowserOffsets = [0, 0, 0, 0]
 
 		If $game <> -1 Then
-			Local $aWindowGameOffsets = StringSplit($g_aGames[$game][4], ",", 2)
+			Local $aWindowGameOffsets = StringSplit($g_aGames[$game][3], ",", 2)
 			If UBound($aWindowGameOffsets) <> 4 Then $aWindowGameOffsets = [0, 0, 0, 0]
 		Else
 			$aWindowGameOffsets = False
@@ -1942,12 +1942,13 @@ Func _GetConfig()
 	; ========== ========== ==========
 
 	; Default game data (used if missing from INI)
-	Local $defaultGames = "agar,paper2,digdig,snake"
+	Local $defaultGames = "agar,paper2,digdig,wormate,snake"
 	Local $defaultGamesData = _
 		[ _
 			["agar", "Agar.io", "(?i)agar.io", "0,0,90,0", "0,0,90,0"], _
 			["paper2", "Paper 2", "(?i)paper", "0,0,0,0", "0,0,0,0"], _
 			["digdig", "Digdig", "(?i)digdig.io", "0,0,0,0", "0,0,0,0"], _
+			["wormate", "Wormate", "(?i)wormate.io", "0,0,0,0", "0,0,0,0"], _
 			["snake", "Snake", "(?i)snake.io", "0,0,0,0", "0,0,0,0"] _
 		]
 
