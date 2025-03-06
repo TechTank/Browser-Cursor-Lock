@@ -48,11 +48,12 @@ EndIf
 
 ; ========== ========== ========== ========== ==========
 
-Global $g_hActiveGameWnd = 0
+Global $g_hActiveWnd = 0 ; Handle for the active browser window
 Global $g_bCursorLocked = False
-Global $browser = -1
-Global $g_aBrowserWindow[4] = [0, 0, 0, 0]
-Global $game = -1
+Global $g_aBrowserWindow[4] = [0, 0, 0, 0] ; Saved rect of the browser window during toggle
+
+Global $browser = -1 ; Index for the currrently detected browser
+Global $game = -1 ; Index for the currently detected game
 
 Global $g_hLastHwnd = 0 ; Last detected window handle
 Global $g_sLastWindowTitle = "" ; Last detected window title
@@ -267,7 +268,7 @@ Func ProcessWindow()
 		If $iGameIndex <> -1 Then
 			If $game < 0 Or $game <> $iGameIndex Then
 				$game = $iGameIndex
-				$g_hActiveGameWnd = $currentHwnd
+				$g_hActiveWnd = $currentHwnd
 
 				; If there's an existing hotkey, remove it before setting a new one
 				If $currentHotkey = "" Then
@@ -286,8 +287,8 @@ Func ProcessWindow()
 			EndIf
 
 			; Only update if switching to a new game instance (different window handle)
-			If $g_hActiveGameWnd <> $currentHwnd Then
-				$g_hActiveGameWnd = $currentHwnd
+			If $g_hActiveWnd <> $currentHwnd Then
+				$g_hActiveWnd = $currentHwnd
 
 				If $configGameMessages Then
 					If $sMessageText <> "" Then
@@ -302,7 +303,7 @@ Func ProcessWindow()
 				If $g_bCursorLocked Then
 
 					; Get the latest window position
-					Local $aNewWindowPos = WindowPosition($g_hActiveGameWnd)
+					Local $aNewWindowPos = WindowPosition($g_hActiveWnd)
 					If Not IsArray($aNewWindowPos) Then Return
 
 					; Ensure you compare against the correct array
@@ -324,7 +325,7 @@ Func ProcessWindow()
 		Else
 			If $game >= 0 Then
 				$game = -1
-				$g_hActiveGameWnd = 0
+				$g_hActiveWnd = 0
 				If $configGameMessages Then
 					$sMessageText = "Game deactivated"
 				EndIf
@@ -340,7 +341,7 @@ Func ProcessWindow()
 		If $browser <> -1 Then
 			$browser = -1
 			$game = -1
-			$g_hActiveGameWnd = 0
+			$g_hActiveWnd = 0
 			If $configBrowserMessages Then
 				$sMessageText = "Browser deactivated"
 			EndIf
@@ -519,14 +520,13 @@ Func ToggleCursorLock()
 	$bHotkeyLock = True
 
 	; Unset the old hotkey
-	If $currentHotkey <> "" Then HotKeySet($currentHotkey)
+	; If $currentHotkey <> "" Then HotKeySet($currentHotkey)
 
 	; Ensure a valid game window is detected
 	If Not $configLockCursorAllTitles Then
-		If Not $g_hActiveGameWnd Or Not WinExists($g_hActiveGameWnd) Then
+		If Not $g_hActiveWnd Or Not WinExists($g_hActiveWnd) Then
 			DisplayMessage("No active game window detected")
 			Sleep(5)
-			HotKeySet($currentHotkey, ToggleCursorLock)
 			$bHotkeyLock = False
 			Return
 		EndIf
@@ -537,15 +537,14 @@ Func ToggleCursorLock()
 		ResetCursorLock()
 		DisplayMessage("Cursor unlocked")
 		Sleep(5)
-		HotKeySet($currentHotkey, ToggleCursorLock)
 		$bHotkeyLock = False
 		Return
 	EndIf
 
 	; Retrieve window position and monitor coverage
 	Local $hWnd = 0
-	If $g_hActiveGameWnd <> 0 Then
-		$hWnd = $g_hActiveGameWnd
+	If $g_hActiveWnd <> 0 Then
+		$hWnd = $g_hActiveWnd
 	ElseIf $g_hLastHwnd <> 0 Then
 		$hWnd = $g_hLastHwnd
 	EndIf
@@ -553,7 +552,6 @@ Func ToggleCursorLock()
 	If Not WinExists($hWnd) Then
 		DisplayMessage("Selected window not found")
 		Sleep(5)
-		HotKeySet($currentHotkey, ToggleCursorLock)
 		$bHotkeyLock = False
 		Return
 	EndIf
@@ -562,7 +560,6 @@ Func ToggleCursorLock()
 	If @error Or Not IsArray($aWindowPosition) Then
 		DisplayMessage("Failed to detect window position")
 		Sleep(5)
-		HotKeySet($currentHotkey, ToggleCursorLock)
 		$bHotkeyLock = False
 		Return
 	EndIf
@@ -581,7 +578,6 @@ Func ToggleCursorLock()
 		If Not $configLockCursorFullscreen Then
 			DisplayMessage("Fullscreen cursor lock is disabled")
 			Sleep(5)
-			HotKeySet($currentHotkey, ToggleCursorLock)
 			$bHotkeyLock = False
 			Return
 		EndIf
@@ -624,7 +620,6 @@ Func ToggleCursorLock()
 		If Not $configLockCursorWindowed Then
 			DisplayMessage("Windowed cursor lock is disabled")
 			Sleep(5)
-			HotKeySet($currentHotkey, ToggleCursorLock)
 			$bHotkeyLock = False
 			Return
 		EndIf
@@ -679,7 +674,6 @@ Func ToggleCursorLock()
 	; Apply cursor restriction
 	_WinAPI_ClipCursor($tRect)
 	Sleep(5)
-	HotKeySet($currentHotkey, ToggleCursorLock)
 	$bHotkeyLock = False
 EndFunc
 
@@ -709,122 +703,170 @@ Global $iMessagePadding = 10
 Global $iMessageTimer
 Global $iMessageDuration = 0
 
+Global $bMessageLock = False
+Global $bMessagePending = False
+Global $g_aCurrentMessage
+
+
 Global $hClearMessageCallback = 0
-Global $bCallbackActive = False
+Global $bCallbackLock = False
+
 Global $iClearMessageID = 0
 
 Global $aCallbacksToFree[0]
 
 Func DisplayMessage($sText, $iDuration = $configDuration, $sFontName = $configFont, $iFontSize = $configFontSize, $iOpacity = $configOpacity)
-	ClearMessageTimerStop()
-	$sText = StringStripWS($sText, 3)
+	; Update the global message parameters
+	Local $aMessage[5] = [$sText, $iDuration, $sFontName, $iFontSize, $iOpacity]
+	$g_aCurrentMessage = $aMessage
 
-	Local $aTextSize = _StringInPixelsNoGUI($sText, $sFontName, $iFontSize, 0)
-	Local $iTextWidth = Ceiling($aTextSize[0]) + 3 + ($iMessagePadding * 2)
-	Local $iTextHeight = Ceiling($aTextSize[1]) + ($iMessagePadding * 2)
+	; If an update is already in progress, just mark that a new update is pending.
+	If $bMessageLock Then
+		$bMessagePending = True
+		Return
+	EndIf
+
+	; Otherwise, acquire the lock.
+	$bMessageLock = True
+
+	If $bCallbackLock = True Then
+		Do
+			Sleep(10)
+		Until $bCallbackLock = False
+	EndIf
 
 	Local Const $LWA_ALPHA = 0x00000002
+	Local Const $SWP_NOZORDER = 0x0004
 
-	; Get active window handle
-	Local $hWnd = WinGetHandle("[ACTIVE]")
-	If @error Then $hWnd = 0
-	Local $aWindowPosition = WindowPosition($hWnd)
-	Local $aRect[4]
-	If @error = 0 And IsArray($aWindowPosition) And IsArray($aWindowPosition[1]) Then
-		$aRect = $aWindowPosition[0] ; Assign the array
-	Else
-		$aRect[0] = 0
-		$aRect[1] = 0
-		$aRect[2] = @DesktopWidth
-		$aRect[3] = @DesktopHeight
-		; = [0, 0, @DesktopWidth, @DesktopHeight] ; Default values
-	EndIf
+	ClearMessageTimerStop()
 
-	; Calculate message position centered on detected monitor
-	Local $iMessageX = $aRect[0] + (($aRect[2] - $iTextWidth) / 2)
-	Local $iMessageY = $aRect[1] + (($aRect[3] - $iTextHeight) / 2)
+	; Loop to catch any pending updates that might have come in during processing.
+	Do
+		; Clear the pending flag.
+		$bMessagePending = False
 
-	; Create GUI
-	If $hGUI = 0 Then
-		$hGUI = GUICreate("Browser Cursor Lock", $iTextWidth, $iTextHeight, $iMessageX, $iMessageY, $WS_POPUP, _
-						BitOR($WS_EX_TOPMOST, $WS_EX_LAYERED, $WS_EX_TOOLWINDOW, $WS_EX_NOACTIVATE))
+		; Make a local copy of the current message data.
+		Local $aLocalMessage = $g_aCurrentMessage
 
-		If @AutoItX64 Then
-			DllCall("user32.dll", "ptr", "SetWindowLongPtr", "hwnd", $hGUI, "int", $GWL_EXSTYLE, "ptr", BitOR($WS_EX_NOACTIVATE, $WS_EX_TOOLWINDOW, $WS_EX_TRANSPARENT, $WS_EX_LAYERED))
+		; Use the local copy for all further processing.
+		Local $sLocalText = StringStripWS($aLocalMessage[0], 3)
+		Local $iLocalDuration = $aLocalMessage[1]
+		Local $sLocalFont = $aLocalMessage[2]
+		Local $iLocalFontSize = $aLocalMessage[3]
+		Local $iLocalOpacity = $aLocalMessage[4]
+
+		; Calculate text dimensions.
+		Local $aTextSize = _StringInPixelsNoGUI($sLocalText, $sLocalFont, $iLocalFontSize, 0)
+		Local $iTextWidth = Ceiling($aTextSize[0]) + 3 + ($iMessagePadding * 2)
+		Local $iTextHeight = Ceiling($aTextSize[1]) + ($iMessagePadding * 2)
+
+		; Get active window handle
+		Local $hWnd = WinGetHandle("[ACTIVE]")
+		If @error Then $hWnd = 0
+		Local $aWindowPosition = WindowPosition($hWnd)
+		Local $aRect[4]
+		If @error = 0 And IsArray($aWindowPosition) And IsArray($aWindowPosition[1]) Then
+			$aRect = $aWindowPosition[0] ; Assign the array
 		Else
-			DllCall("user32.dll", "long", "SetWindowLong", "hwnd", $hGUI, "int", $GWL_EXSTYLE, "long", BitOR($WS_EX_NOACTIVATE, $WS_EX_TOOLWINDOW, $WS_EX_TRANSPARENT, $WS_EX_LAYERED))
+			$aRect[0] = 0
+			$aRect[1] = 0
+			$aRect[2] = @DesktopWidth
+			$aRect[3] = @DesktopHeight
+			; = [0, 0, @DesktopWidth, @DesktopHeight] ; Default values
 		EndIf
 
-		; Set Opacity
-		If @AutoItX64 Then
-			DllCall("user32.dll", "bool", "SetLayeredWindowAttributes", "ptr", $hGUI, "dword", 0, "byte", $iOpacity, "dword", $LWA_ALPHA)
+		; Calculate message position centered on detected monitor
+		Local $iMessageX = $aRect[0] + (($aRect[2] - $iTextWidth) / 2)
+		Local $iMessageY = $aRect[1] + (($aRect[3] - $iTextHeight) / 2)
+
+		; Create GUI
+		If $hGUI = 0 Then
+			$hGUI = GUICreate("Browser Cursor Lock", $iTextWidth, $iTextHeight, $iMessageX, $iMessageY, $WS_POPUP, _
+							BitOR($WS_EX_TOPMOST, $WS_EX_LAYERED, $WS_EX_TOOLWINDOW, $WS_EX_NOACTIVATE))
+
+			If @AutoItX64 Then
+				DllCall("user32.dll", "ptr", "SetWindowLongPtr", "hwnd", $hGUI, "int", $GWL_EXSTYLE, "ptr", BitOR($WS_EX_NOACTIVATE, $WS_EX_TOOLWINDOW, $WS_EX_TRANSPARENT, $WS_EX_LAYERED))
+			Else
+				DllCall("user32.dll", "long", "SetWindowLong", "hwnd", $hGUI, "int", $GWL_EXSTYLE, "long", BitOR($WS_EX_NOACTIVATE, $WS_EX_TOOLWINDOW, $WS_EX_TRANSPARENT, $WS_EX_LAYERED))
+			EndIf
+
+			; Set Opacity
+			If @AutoItX64 Then
+				DllCall("user32.dll", "bool", "SetLayeredWindowAttributes", "ptr", $hGUI, "dword", 0, "byte", $iOpacity, "dword", $LWA_ALPHA)
+			Else
+				DllCall("user32.dll", "bool", "SetLayeredWindowAttributes", "hwnd", $hGUI, "dword", 0, "byte", $iOpacity, "dword", $LWA_ALPHA)
+			EndIf
+
+			WinSetOnTop($hGUI, "", 1)
+			GUISetState(@SW_SHOWNA, $hGUI)
 		Else
-			DllCall("user32.dll", "bool", "SetLayeredWindowAttributes", "hwnd", $hGUI, "dword", 0, "byte", $iOpacity, "dword", $LWA_ALPHA)
+			; Move existing message window
+			DllCall("user32.dll", "bool", "SetWindowPos", "hwnd", $hGUI, "hwnd", 0, "int", $iMessageX, "int", $iMessageY, _
+					"int", $iTextWidth + 100, "int", $iTextHeight, "uint", $SWP_NOZORDER)
+
+			; Set Opacity
+			DllCall("user32.dll", "bool", "SetLayeredWindowAttributes", "hwnd", $hGUI, "dword", 0, "byte", $iLocalOpacity, "dword", $LWA_ALPHA)
+
+			; Clear the existing drawing
+			If $hGraphic <> 0 Then
+				_GDIPlus_GraphicsClear($hGraphic)
+				_GDIPlus_GraphicsDispose($hGraphic)
+			EndIf
+
+			_WinAPI_RedrawWindow($hGUI, 0, 0, BitOR($RDW_INVALIDATE, $RDW_UPDATENOW))
 		EndIf
 
-		WinSetOnTop($hGUI, "", 1)
-		GUISetState(@SW_SHOWNA, $hGUI)
-	Else
-		; Move existing message window
-		Local Const $SWP_NOZORDER = 0x0004
-		DllCall("user32.dll", "bool", "SetWindowPos", "hwnd", $hGUI, "hwnd", 0, "int", $iMessageX, "int", $iMessageY, _
-				"int", $iTextWidth + 100, "int", $iTextHeight, "uint", $SWP_NOZORDER)
+		$hGraphic = _GDIPlus_GraphicsCreateFromHWND($hGUI)
+		_GDIPlus_GraphicsSetTextRenderingHint($hGraphic, $GDIP_TEXTRENDERINGHINT_ANTIALIASGRIDFIT)
 
-		; Set Opacity
-		DllCall("user32.dll", "bool", "SetLayeredWindowAttributes", "hwnd", $hGUI, "dword", 0, "byte", $iOpacity, "dword", $LWA_ALPHA)
-
-		; Clear the existing drawing
-		If $hGraphic <> 0 Then
-			_GDIPlus_GraphicsClear($hGraphic)
-			_GDIPlus_GraphicsDispose($hGraphic)
+		Local $hBrush = _GDIPlus_BrushCreateSolid(0x7F000000)
+		Local $hFormat = _GDIPlus_StringFormatCreate()
+		Local $aRet = DllCall($hGDIP, "int", "GdipSetStringFormatAlign", "ptr", $hFormat, "int", 0)
+		If @error Then Return SetError(1, 0, 0)
+		If @error Or Not IsArray($aRet) Or $aRet[0] <> 0 Then
+			MsgBox(16, "Error", "Failed to set StringFormat flags.")
 		EndIf
+
+		Local $aRet = DllCall($hGDIP, "int", "GdipSetStringFormatFlags", "ptr", $hFormat, "int", 0)
+		If @error Or Not IsArray($aRet) Or $aRet[0] <> 0 Then
+			MsgBox(16, "Error", "Failed to set StringFormat flags.")
+		EndIf
+
+		Local $hFamily = _GDIPlus_FontFamilyCreate($sFontName)
+		Local $hFont = _GDIPlus_FontCreate($hFamily, $iFontSize, 0)
+
+		Local $tLayout = _GDIPlus_RectFCreate($iMessagePadding - 3, $iMessagePadding, $aTextSize[0] + 100, $aTextSize[1])
+		Local $hRegion = _WinAPI_CreateRoundRectRgn(0, 0, $iTextWidth, $iTextHeight, $iMessagePadding * 2, $iMessagePadding * 2)
 
 		_WinAPI_RedrawWindow($hGUI, 0, 0, BitOR($RDW_INVALIDATE, $RDW_UPDATENOW))
-	EndIf
 
-	$hGraphic = _GDIPlus_GraphicsCreateFromHWND($hGUI)
-	_GDIPlus_GraphicsSetTextRenderingHint($hGraphic, $GDIP_TEXTRENDERINGHINT_ANTIALIASGRIDFIT)
+		; Draw the rounded corners
+		_WinAPI_SetWindowRgn($hGUI, $hRegion)
 
-	Local $hBrush = _GDIPlus_BrushCreateSolid(0x7F000000)
-	Local $hFormat = _GDIPlus_StringFormatCreate()
-	Local $aRet = DllCall($hGDIP, "int", "GdipSetStringFormatAlign", "ptr", $hFormat, "int", 0)
-	If @error Then Return SetError(1, 0, 0)
-	If @error Or Not IsArray($aRet) Or $aRet[0] <> 0 Then
-		MsgBox(16, "Error", "Failed to set StringFormat flags.")
-	EndIf
+		; Draw the updated string
+		_GDIPlus_GraphicsDrawStringEx($hGraphic, $sLocalText, $hFont, $tLayout, $hFormat, $hBrush)
 
-	Local $aRet = DllCall($hGDIP, "int", "GdipSetStringFormatFlags", "ptr", $hFormat, "int", 0)
-	If @error Or Not IsArray($aRet) Or $aRet[0] <> 0 Then
-		MsgBox(16, "Error", "Failed to set StringFormat flags.")
-	EndIf
+		_WinAPI_RedrawWindow($hGUI, 0, 0, BitOR($RDW_INVALIDATE, $RDW_UPDATENOW))
 
-	Local $hFamily = _GDIPlus_FontFamilyCreate($sFontName)
-	Local $hFont = _GDIPlus_FontCreate($hFamily, $iFontSize, 0)
+		; Cleanup GDI+ objects
+		_GDIPlus_BrushDispose($hBrush)
+		_GDIPlus_StringFormatDispose($hFormat)
+		_GDIPlus_FontDispose($hFont)
+		_GDIPlus_FontFamilyDispose($hFamily)
+		_WinAPI_DeleteObject($hRegion)
 
-	Local $tLayout = _GDIPlus_RectFCreate($iMessagePadding - 3, $iMessagePadding, $aTextSize[0] + 100, $aTextSize[1])
-	Local $hRegion = _WinAPI_CreateRoundRectRgn(0, 0, $iTextWidth, $iTextHeight, $iMessagePadding * 2, $iMessagePadding * 2)
+		; Restart timer
+		$iMessageDuration = $iLocalDuration
+		$iMessageTimer = TimerInit()
 
-	_WinAPI_RedrawWindow($hGUI, 0, 0, BitOR($RDW_INVALIDATE, $RDW_UPDATENOW))
+		; A short sleep to allow any potential new updates to set the pending flag.
+		Sleep(25)
+	Until Not $bMessagePending
 
-	; Draw the rounded corners
-	_WinAPI_SetWindowRgn($hGUI, $hRegion)
-
-	; Draw the updated string
-	_GDIPlus_GraphicsDrawStringEx($hGraphic, $sText, $hFont, $tLayout, $hFormat, $hBrush)
-
-	_WinAPI_RedrawWindow($hGUI, 0, 0, BitOR($RDW_INVALIDATE, $RDW_UPDATENOW))
-
-	; Cleanup GDI+ objects
-	_GDIPlus_BrushDispose($hBrush)
-	_GDIPlus_StringFormatDispose($hFormat)
-	_GDIPlus_FontDispose($hFont)
-	_GDIPlus_FontFamilyDispose($hFamily)
-	_WinAPI_DeleteObject($hRegion)
-
-	; Restart timer
-	$iMessageDuration = $iDuration
-	$iMessageTimer = TimerInit()
 	ClearMessageTimerStart()
+
+	; Release the lock.
+	$bMessageLock = False
 EndFunc
 
 Func ClearMessageTimerStart()
@@ -860,7 +902,7 @@ Func ClearMessageTimerStop()
 	EndIf
 
 	Local $maxWait = 500, $waitTime = 0
-	While $bCallbackActive And $waitTime < $maxWait
+	While $bCallbackLock And $waitTime < $maxWait
 		Sleep(10)
 		$waitTime += 10
 	WEnd
@@ -881,7 +923,7 @@ EndFunc
 Func ProcessCallbackCleanup()
 	; Go through the array and free callbacks that are safe to free
 	For $i = UBound($aCallbacksToFree) - 1 To 0 Step -1
-		If Not $bCallbackActive Then
+		If Not $bCallbackLock Then
 			DllCallbackFree($aCallbacksToFree[$i])
 			_ArrayDelete($aCallbacksToFree, $i)
 		EndIf
@@ -889,11 +931,11 @@ Func ProcessCallbackCleanup()
 EndFunc
 
 Func ClearMessageTimer($hWnd, $uMsg, $idEvent, $dwTime)
-	If $hGUI <> 0 Then
-		$bCallbackActive = True
+	If $hGUI <> 0 And $bMessageLock = False Then
+		$bCallbackLock = True
 		Local $elapsed = TimerDiff($iMessageTimer)
 		If $elapsed >= $iMessageDuration Then ClearMessage()
-		$bCallbackActive = False
+		$bCallbackLock = False
 	EndIf
 	Return 0
 EndFunc
@@ -1091,7 +1133,7 @@ Func ShowConfigWindow()
 	$g_iSelectedBrowserIndex = -1
 	$g_iSelectedGameIndex = -1
 
-	; (Temporary arrays $tmpBrowsers and $tmpGames now hold copies of your global arrays)
+	; Temporary arrays $tmpBrowsers and $tmpGames now hold copies of the global arrays
 	$hConfigGUI = GUICreate("Browser Cursor Lock - Configuration", 445, 500)
 	Local Const $ES_NUMBER = 0x2000 ; Restrict input to numbers only
 
@@ -1139,7 +1181,6 @@ Func ShowConfigWindow()
 			Local $hOpacitySlider = GUICtrlCreateSlider(160, 320, 180, 20)
 			GUICtrlSetLimit($hOpacitySlider, 255, 1)
 			GUICtrlSetData($hOpacitySlider, $configOpacity)
-			;GUICtrlSetBkColor($hOpacitySlider, 0xF0F0F0)
 			Local $hOpacityLabel = GUICtrlCreateLabel(_OpacityToPercentage($configOpacity), 350, 320, 50, 20)
 
 			GUICtrlCreateLabel("Duration (ms):", 40, 350, 120, 20)
