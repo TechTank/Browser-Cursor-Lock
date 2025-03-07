@@ -707,7 +707,6 @@ Global $bMessageLock = False
 Global $bMessagePending = False
 Global $g_aCurrentMessage
 
-
 Global $hClearMessageCallback = 0
 Global $bCallbackLock = False
 
@@ -1920,13 +1919,14 @@ Func _GetConfig()
 	; ========== ========== ==========
 
 	; Default browser data (used if missing from INI)
-	Local $defaultBrowsers = "brave,chrome,firefox,edge"
+	Local $defaultBrowsers = "brave,chrome,firefox,edge,opera"
 	Local $defaultBrowserData = _
 		[ _
 			["brave", "Brave", ".*Brave$", "77,0,0,0", "0,0,0,0"], _
 			["chrome", "Chrome", ".*Google Chrome$", "83,0,0,0", "0,0,0,0"], _
 			["firefox", "Firefox", ".*Mozilla Firefox$", "81,0,0,0", "0,0,0,0"], _
-			["edge", "Edge", ".*Microsoft\s*.*Edge$", "70,0,0,0", "0,0,0,0"] _
+			["edge", "Edge", ".*Microsoft\s*.*Edge$", "70,0,0,0", "0,0,0,0"], _
+			["opera", "Opera", ".*Opera$", "83,4,4,56", "-4,0,0,0"] _
 		]
 
 	; Read browser IDs from the INI file
@@ -2211,13 +2211,13 @@ Func _GetKeyName($hexKey)
 	$keyMap.Add("DF", "OEM_8")
 
 	; Media / Special Function Keys
-	;$keyMap.Add("AD", "VOLUME_MUTE")		; Volume Mute
+	;$keyMap.Add("AD", "VOLUME_MUTE")	; Volume Mute
 	;$keyMap.Add("AE", "VOLUME_DOWN")	; Volume Down
-	;$keyMap.Add("AF", "VOLUME_UP")			; Volume Up
+	;$keyMap.Add("AF", "VOLUME_UP")		; Volume Up
 	;$keyMap.Add("B0", "NEXT_TRACK")		; Next Track
 	;$keyMap.Add("B1", "PREV_TRACK")		; Previous Track
 	;$keyMap.Add("B2", "STOP")					; Stop
-	;$keyMap.Add("B3", "PLAY_PAUSE")			; Play/Pause
+	;$keyMap.Add("B3", "PLAY_PAUSE")		; Play/Pause
 
 	; Additional Special Keys
 	;$keyMap.Add("0C", "CLEAR")					; Clear key (often on numpad)
