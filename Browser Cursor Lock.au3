@@ -583,11 +583,11 @@ Func ToggleCursorLock()
 		EndIf
 
 		Local $aFullBrowserOffsets = StringSplit($g_aBrowsers[$browser][4], ",", 2)
-		If UBound($aFullBrowserOffsets) <> 4 Then $aFullBrowserOffsets = [0, 0, 0, 0]
+		If UBound($aFullBrowserOffsets) <> 4 Then Local $aFullBrowserOffsets = [0, 0, 0, 0]
 
 		If $game <> -1 Then
 			Local $aFullGameOffsets = StringSplit($g_aGames[$game][4], ",", 2)
-			If UBound($aFullGameOffsets) <> 4 Then $aFullGameOffsets = [0, 0, 0, 0]
+			If UBound($aFullGameOffsets) <> 4 Then Local $aFullGameOffsets = [0, 0, 0, 0]
 		Else
 			$aFullGameOffsets = False
 		EndIf
@@ -625,11 +625,11 @@ Func ToggleCursorLock()
 		EndIf
 
 		Local $aWindowBrowserOffsets = StringSplit($g_aBrowsers[$browser][3], ",", 2)
-		If UBound($aWindowBrowserOffsets) <> 4 Then $aWindowBrowserOffsets = [0, 0, 0, 0]
+		If UBound($aWindowBrowserOffsets) <> 4 Then Local $aWindowBrowserOffsets = [0, 0, 0, 0]
 
 		If $game <> -1 Then
 			Local $aWindowGameOffsets = StringSplit($g_aGames[$game][3], ",", 2)
-			If UBound($aWindowGameOffsets) <> 4 Then $aWindowGameOffsets = [0, 0, 0, 0]
+			If UBound($aWindowGameOffsets) <> 4 Then Local $aWindowGameOffsets = [0, 0, 0, 0]
 		Else
 			$aWindowGameOffsets = False
 		EndIf
@@ -1570,18 +1570,56 @@ Func _UpdateBrowserFields($index, $hBrowserID, $hBrowserDisplay, $hBrowserTitle,
 	Local $aWindowOffsets = StringSplit($tmpBrowsers[$index][3], ",", 2)
 	Local $aFullscreenOffsets = StringSplit($tmpBrowsers[$index][4], ",", 2)
 
-	If UBound($aWindowOffsets) = 4 Then
+	; =====
+
+	If UBound($aWindowOffsets) >= 1 Then
 		GUICtrlSetData($hWindowOffsetT, $aWindowOffsets[0])
-		GUICtrlSetData($hWindowOffsetR, $aWindowOffsets[1])
-		GUICtrlSetData($hWindowOffsetB, $aWindowOffsets[2])
-		GUICtrlSetData($hWindowOffsetL, $aWindowOffsets[3])
+	Else
+		GUICtrlSetData($hWindowOffsetT, "0")
 	EndIf
 
-	If UBound($aFullscreenOffsets) = 4 Then
+	If UBound($aWindowOffsets) >= 2 Then
+		GUICtrlSetData($hWindowOffsetR, $aWindowOffsets[1])
+	Else
+		GUICtrlSetData($hWindowOffsetR, "0")
+	EndIf
+
+	If UBound($aWindowOffsets) >= 3 Then
+		GUICtrlSetData($hWindowOffsetB, $aWindowOffsets[2])
+	Else
+		GUICtrlSetData($hWindowOffsetB, "0")
+	EndIf
+
+	If UBound($aWindowOffsets) >= 4 Then
+		GUICtrlSetData($hWindowOffsetL, $aWindowOffsets[3])
+	Else
+		GUICtrlSetData($hWindowOffsetL, "0")
+	EndIf
+
+	; =====
+
+	If UBound($aFullscreenOffsets) >= 1 Then
 		GUICtrlSetData($hFullscreenOffsetT, $aFullscreenOffsets[0])
+	Else
+		GUICtrlSetData($hFullscreenOffsetT, "0")
+	EndIf
+
+	If UBound($aFullscreenOffsets) >= 2 Then
 		GUICtrlSetData($hFullscreenOffsetR, $aFullscreenOffsets[1])
+	Else
+		GUICtrlSetData($hFullscreenOffsetR, "0")
+	EndIf
+
+	If UBound($aFullscreenOffsets) >= 3 Then
 		GUICtrlSetData($hFullscreenOffsetB, $aFullscreenOffsets[2])
+	Else
+		GUICtrlSetData($hFullscreenOffsetB, "0")
+	EndIf
+
+	If UBound($aFullscreenOffsets) >= 4 Then
 		GUICtrlSetData($hFullscreenOffsetL, $aFullscreenOffsets[3])
+	Else
+		GUICtrlSetData($hFullscreenOffsetL, "0")
 	EndIf
 EndFunc
 
@@ -1599,18 +1637,56 @@ Func _UpdateGameFields($index, $hGameID, $hGameDisplay, $hGameTitle, _
 	Local $aWindowOffsets = StringSplit($tmpGames[$index][3], ",", 2)
 	Local $aFullscreenOffsets = StringSplit($tmpGames[$index][4], ",", 2)
 
-	If UBound($aWindowOffsets) = 4 Then
+	; =====
+
+	If UBound($aWindowOffsets) >= 1 Then
 		GUICtrlSetData($hGameWindowOffsetT, $aWindowOffsets[0])
-		GUICtrlSetData($hGameWindowOffsetR, $aWindowOffsets[1])
-		GUICtrlSetData($hGameWindowOffsetB, $aWindowOffsets[2])
-		GUICtrlSetData($hGameWindowOffsetL, $aWindowOffsets[3])
+	Else
+		GUICtrlSetData($hGameWindowOffsetT, "0")
 	EndIf
 
-	If UBound($aFullscreenOffsets) = 4 Then
+	If UBound($aWindowOffsets) >= 2 Then
+		GUICtrlSetData($hGameWindowOffsetR, $aWindowOffsets[1])
+	Else
+		GUICtrlSetData($hGameWindowOffsetR, "0")
+	EndIf
+
+	If UBound($aWindowOffsets) >= 3 Then
+		GUICtrlSetData($hGameWindowOffsetB, $aWindowOffsets[2])
+	Else
+		GUICtrlSetData($hGameWindowOffsetB, "0")
+	EndIf
+
+	If UBound($aWindowOffsets) >= 4 Then
+		GUICtrlSetData($hGameWindowOffsetL, $aWindowOffsets[3])
+	Else
+		GUICtrlSetData($hGameWindowOffsetL, "0")
+	EndIf
+
+	; =====
+
+	If UBound($aFullscreenOffsets) >= 1 Then
 		GUICtrlSetData($hGameFullscreenOffsetT, $aFullscreenOffsets[0])
+	Else
+		GUICtrlSetData($hGameFullscreenOffsetT, "0")
+	EndIf
+
+	If UBound($aFullscreenOffsets) >= 2 Then
 		GUICtrlSetData($hGameFullscreenOffsetR, $aFullscreenOffsets[1])
+	Else
+		GUICtrlSetData($hGameFullscreenOffsetR, "0")
+	EndIf
+
+	If UBound($aFullscreenOffsets) >= 3 Then
 		GUICtrlSetData($hGameFullscreenOffsetB, $aFullscreenOffsets[2])
+	Else
+		GUICtrlSetData($hGameFullscreenOffsetB, "0")
+	EndIf
+
+	If UBound($aFullscreenOffsets) >= 4 Then
 		GUICtrlSetData($hGameFullscreenOffsetL, $aFullscreenOffsets[3])
+	Else
+		GUICtrlSetData($hGameFullscreenOffsetL, "0")
 	EndIf
 EndFunc
 
@@ -1947,15 +2023,15 @@ Func _GetConfig()
 		; Find default values (if any)
 		Local $defaultDisplay = $browserID
 		Local $defaultTitle = $browserID
-		Local $defaultFullOffsets = "0,0,0,0"
 		Local $defaultWindowOffsets = "0,0,0,0"
+		Local $defaultFullOffsets = "0,0,0,0"
 
 		For $j = 0 To UBound($defaultBrowserData) - 1
 			If $defaultBrowserData[$j][0] = $browserID Then
 				$defaultDisplay = $defaultBrowserData[$j][1]
 				$defaultTitle = $defaultBrowserData[$j][2]
-				$defaultFullOffsets = $defaultBrowserData[$j][3]
-				$defaultWindowOffsets = $defaultBrowserData[$j][4]
+				$defaultWindowOffsets = $defaultBrowserData[$j][3]
+				$defaultFullOffsets = $defaultBrowserData[$j][4]
 				ExitLoop
 			EndIf
 		Next
@@ -1966,18 +2042,22 @@ Func _GetConfig()
 		; Read title regex(or set default)
 		Local $browserTitle = IniRead($configPath, $browserID & "_browser", "title", $defaultTitle)
 
-		; Read fullscreen offsets (or set default)
-		Local $sFullOffsets = IniRead($configPath, $browserID & "_browser", "fullscreen_offsets", $defaultFullOffsets)
-
 		; Read windowed offsets (or set default)
-		Local $sWindowOffsets = IniRead($configPath, $browserID & "_browser", "windowed_offsets", $defaultWindowOffsets)
+		Local $sWindowOffsets = StringStripWS(IniRead($configPath, $browserID & "_browser", "windowed_offsets", $defaultWindowOffsets), 3)
+		$sWindowOffsets = StringRegExpReplace($sWindowOffsets, "[, ]+$", "")
+		If $sWindowOffsets = "" Then $sWindowOffsets = $defaultWindowOffsets
+
+		; Read fullscreen offsets (or set default)
+		Local $sFullOffsets = StringStripWS(IniRead($configPath, $browserID & "_browser", "fullscreen_offsets", $defaultFullOffsets), 3)
+		$sFullOffsets = StringRegExpReplace($sFullOffsets, "[, ]+$", "")
+		 If $sFullOffsets = "" Then $sFullOffsets = $defaultFullOffsets
 
 		; Store the browser
 		$g_aBrowsers[$i][0] = $browserID
 		$g_aBrowsers[$i][1] = $browserDisplay
 		$g_aBrowsers[$i][2] = $browserTitle
-		$g_aBrowsers[$i][3] = $sFullOffsets
-		$g_aBrowsers[$i][4] = $sWindowOffsets
+		$g_aBrowsers[$i][3] = $sWindowOffsets
+		$g_aBrowsers[$i][4] = $sFullOffsets
 	Next
 
 	; ========== ========== ==========
@@ -2011,15 +2091,15 @@ Func _GetConfig()
 		; Find default values (if any)
 		Local $defaultDisplay = $gameID
 		Local $defaultTitle = $gameID
-		Local $defaultFullOffsets = "0,0,0,0"
 		Local $defaultWindowOffsets = "0,0,0,0"
+		Local $defaultFullOffsets = "0,0,0,0"
 
 		For $j = 0 To UBound($defaultGamesData) - 1
 			If $defaultGamesData[$j][0] = $gameID Then
 				$defaultDisplay = $defaultGamesData[$j][1]
 				$defaultTitle = $defaultGamesData[$j][2]
-				$defaultFullOffsets = $defaultGamesData[$j][3]
-				$defaultWindowOffsets = $defaultGamesData[$j][4]
+				$defaultWindowOffsets = $defaultGamesData[$j][3]
+				$defaultFullOffsets = $defaultGamesData[$j][4]
 				ExitLoop
 			EndIf
 		Next
@@ -2030,18 +2110,22 @@ Func _GetConfig()
 		; Read title regex(or set default)
 		Local $gameTitle = IniRead($configPath, $gameID & "_game", "title", $defaultTitle)
 
-		; Read fullscreen offsets (or set default)
-		Local $sFullOffsets = IniRead($configPath, $gameID & "_game", "fullscreen_offsets", $defaultFullOffsets)
-
 		; Read windowed offsets (or set default)
-		Local $sWindowOffsets = IniRead($configPath, $gameID & "_game", "windowed_offsets", $defaultWindowOffsets)
+		Local $sWindowOffsets = StringStripWS(IniRead($configPath, $gameID & "_game", "windowed_offsets", $defaultWindowOffsets), 3)
+		$sWindowOffsets = StringRegExpReplace($sWindowOffsets, "[, ]+$", "")
+		If $sWindowOffsets = "" Then $sWindowOffsets = $defaultWindowOffsets
+
+		; Read fullscreen offsets (or set default)
+		Local $sFullOffsets = StringStripWS(IniRead($configPath, $gameID & "_game", "fullscreen_offsets", $defaultFullOffsets), 3)
+		$sFullOffsets = StringRegExpReplace($sFullOffsets, "[, ]+$", "")
+		If $sFullOffsets = "" Then $sFullOffsets = $defaultFullOffsets
 
 		; Store in game array
 		$g_aGames[$i][0] = $gameID
 		$g_aGames[$i][1] = $gameDisplay
 		$g_aGames[$i][2] = $gameTitle
-		$g_aGames[$i][3] = $sFullOffsets
-		$g_aGames[$i][4] = $sWindowOffsets
+		$g_aGames[$i][3] = $sWindowOffsets
+		$g_aGames[$i][4] = $sFullOffsets
 	Next
 EndFunc
 
