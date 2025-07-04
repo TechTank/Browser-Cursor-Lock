@@ -79,6 +79,10 @@ TraySetState($TRAY_ICONSTATE_SHOW)
 
 Func _Main()
 	$hGDIP = _GDIPlus_Startup()
+	If @error Then
+		MsgBox(16, "Error", "Failed to initialize GDI+.")
+		Exit
+	EndIf
 
 	_GetConfig()
 
@@ -98,7 +102,7 @@ Func _Main()
 			Local $iMsgID = $aMsg[0]
 			Local $hMsgSource = $aMsg[1]
 
-			If $hMsgSource = $hAboutGUI Then
+			If $hMsgSource = $hAboutGUI And $hAboutGUI <> 0 Then
 				Switch $iMsgID
 					Case $idLinkGitHub
 						LinkGithubClick()
@@ -585,8 +589,10 @@ Func ToggleCursorLock()
 		Local $aFullBrowserOffsets = StringSplit($g_aBrowsers[$browser][4], ",", 2)
 		If UBound($aFullBrowserOffsets) <> 4 Then Local $aFullBrowserOffsets = [0, 0, 0, 0]
 
+		Local $aFullGameOffsets
+
 		If $game <> -1 Then
-			Local $aFullGameOffsets = StringSplit($g_aGames[$game][4], ",", 2)
+			$aFullGameOffsets = StringSplit($g_aGames[$game][4], ",", 2)
 			If UBound($aFullGameOffsets) <> 4 Then Local $aFullGameOffsets = [0, 0, 0, 0]
 		Else
 			$aFullGameOffsets = False
@@ -670,9 +676,21 @@ Func ToggleCursorLock()
 
 	; Create the clipping rectangle
 	Local $tRect = _WinAPI_CreateRect($iLeft, $iTop, $iRight, $iBottom)
+	If @error Then
+		DisplayMessage("Failed to create rectangle structure")
+	Else
+		; Apply cursor restriction
+		Local $aResult
+		If @AutoItX64 Then
+			$aResult = DllCall("user32.dll", "bool", "ClipCursor", "ptr", DllStructGetPtr($tRect))
+		Else
+			$aResult = DllCall("user32.dll", "bool", "ClipCursor", "hwnd", DllStructGetPtr($tRect))
+		EndIf
+		If @error Or Not $aResult[0] Then
+			DisplayMessage("Failed to clip cursor: " & @error)
+		EndIf
+	EndIf
 
-	; Apply cursor restriction
-	_WinAPI_ClipCursor($tRect)
 	Sleep(5)
 	$bHotkeyLock = False
 EndFunc
@@ -920,6 +938,12 @@ Func ClearMessageTimerStop()
 EndFunc
 
 Func ProcessCallbackCleanup()
+	If $bCallbackLock = True Then
+		Do
+			Sleep(10)
+		Until $bCallbackLock = False
+	EndIf
+	$bCallbackLock = True
 	; Go through the array and free callbacks that are safe to free
 	For $i = UBound($aCallbacksToFree) - 1 To 0 Step -1
 		If Not $bCallbackLock Then
@@ -927,6 +951,7 @@ Func ProcessCallbackCleanup()
 			_ArrayDelete($aCallbacksToFree, $i)
 		EndIf
 	Next
+	$bCallbackLock = False
 EndFunc
 
 Func ClearMessageTimer($hWnd, $uMsg, $idEvent, $dwTime)
@@ -982,6 +1007,14 @@ Func _StringInPixelsNoGUI($sString, $sFontFamily, $fSize, $iStyle, $iColWidth = 
 
 	; Create a font and set the rendering hint
 	Local $hFamily = _GDIPlus_FontFamilyCreate($sFontFamily)
+	If @error Then
+		; Font does not exist
+		_GDIPlus_StringFormatDispose($hFormat)
+		_GDIPlus_GraphicsDispose($hGraphic)
+		_WinAPI_ReleaseDC(0, $hDC)
+		Return SetError(1, 0, 0)
+	EndIf
+
 	Local $hFont = _GDIPlus_FontCreate($hFamily, $fSize, $iStyle)
 	_GDIPlus_GraphicsSetTextRenderingHint($hGraphic, $GDIP_TEXTRENDERINGHINT_ANTIALIASGRIDFIT)
 
