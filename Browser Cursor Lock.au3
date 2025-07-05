@@ -1777,9 +1777,9 @@ Func _CaptureBrowserFields($hBrowserList, $hBrowserID, $hBrowserDisplay, $hBrows
 
 	; Store offsets properly
 	Local $winOffsets = GUICtrlRead($hWindowOffsetT) & "," & GUICtrlRead($hWindowOffsetR) & "," & _
-						GUICtrlRead($hWindowOffsetB) & "," & GUICtrlRead($hWindowOffsetL)
+									GUICtrlRead($hWindowOffsetB) & "," & GUICtrlRead($hWindowOffsetL)
 	Local $fullOffsets = GUICtrlRead($hFullscreenOffsetT) & "," & GUICtrlRead($hFullscreenOffsetR) & "," & _
-						 GUICtrlRead($hFullscreenOffsetB) & "," & GUICtrlRead($hFullscreenOffsetL)
+									GUICtrlRead($hFullscreenOffsetB) & "," & GUICtrlRead($hFullscreenOffsetL)
 
 	$tmpBrowsers[$index][3] = $winOffsets
 	$tmpBrowsers[$index][4] = $fullOffsets
@@ -1809,9 +1809,9 @@ Func _CaptureGameFields($hGameList, $hGameID, $hGameDisplay, $hGameTitle, _
 
 	; Store offsets properly
 	Local $winOffsets = GUICtrlRead($hGameWindowOffsetT) & "," & GUICtrlRead($hGameWindowOffsetR) & "," & _
-						GUICtrlRead($hGameWindowOffsetB) & "," & GUICtrlRead($hGameWindowOffsetL)
+									GUICtrlRead($hGameWindowOffsetB) & "," & GUICtrlRead($hGameWindowOffsetL)
 	Local $fullOffsets = GUICtrlRead($hGameFullscreenOffsetT) & "," & GUICtrlRead($hGameFullscreenOffsetR) & "," & _
-						 GUICtrlRead($hGameFullscreenOffsetB) & "," & GUICtrlRead($hGameFullscreenOffsetL)
+									GUICtrlRead($hGameFullscreenOffsetB) & "," & GUICtrlRead($hGameFullscreenOffsetL)
 
 	$tmpGames[$index][3] = $winOffsets
 	$tmpGames[$index][4] = $fullOffsets
