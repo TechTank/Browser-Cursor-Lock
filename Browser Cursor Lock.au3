@@ -2461,7 +2461,11 @@ Func _RemoveDuplicates(ByRef $array)
 EndFunc
 
 Func _IsPressed($sHexKey, $vDLL = "user32.dll")
-	Local $aCall = DllCall($vDLL, "short", "GetAsyncKeyState", "int", "0x" & $sHexKey)
+	If @AutoItX64 Then
+		Local $aCall = DllCall($vDLL, "int", "GetAsyncKeyState", "int", "0x" & $sHexKey)
+	Else
+		Local $aCall = DllCall($vDLL, "short", "GetAsyncKeyState", "int", "0x" & $sHexKey)
+	EndIf
 	If @error Then Return SetError(@error, @extended, False)
 	Return BitAND($aCall[0], 0x8000) <> 0
 EndFunc
