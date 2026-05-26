@@ -153,6 +153,8 @@ Func ExitScript()
 		$bShutdown = True
 		Sleep(1000)
 
+		If $g_bCursorLocked Then ResetCursorLock()
+
 		_GDIPlus_Shutdown()
 
 		If $g_hMutex Then
@@ -189,7 +191,20 @@ Func ProcessWindow()
 	If @error Then Return ; Exit if we can't get window position
 
 	Local $currentWindow = WinGetTitle($currentHwnd)
-	If $currentWindow = "" Then Return ; Skip processing if title hasn't changed
+	If $currentWindow = "" Then ; Skip processing if title hasn't changed
+		If $g_bCursorLocked Then ResetCursorLock()
+
+		$browser = -1
+		$game = -1
+		$g_hActiveWnd = 0
+
+		If $currentHotkey <> "" Then
+			HotKeySet($currentHotkey)
+			$currentHotkey = ""
+		EndIf
+
+		Return
+	EndIf
 
 	Local $iBrowserIndex = -1
 	Local $iGameIndex = -1
@@ -217,7 +232,10 @@ Func ProcessWindow()
 			$titleAfterHyphen = $currentWindow
 		EndIf
 
-		If Not IsArray($g_aBrowsers) Then Exit
+		If Not IsArray($g_aBrowsers) Then
+			DisplayMessage("Browser config error")
+			Return
+		EndIf
 
 		; Check if the window belongs to a known browser
 		For $i = 0 To UBound($g_aBrowsers) - 1
@@ -330,9 +348,16 @@ Func ProcessWindow()
 			If $game >= 0 Then
 				$game = -1
 				$g_hActiveWnd = 0
+
+				If $currentHotkey <> "" And Not $configLockCursorAllTitles Then
+					HotKeySet($currentHotkey)
+					$currentHotkey = ""
+				EndIf
+
 				If $configGameMessages Then
 					$sMessageText = "Game deactivated"
 				EndIf
+
 				If $g_bCursorLocked Then
 					ResetCursorLock()
 					If $configGameMessages Then
@@ -346,9 +371,16 @@ Func ProcessWindow()
 			$browser = -1
 			$game = -1
 			$g_hActiveWnd = 0
+
+			If $currentHotkey <> "" Then
+				HotKeySet($currentHotkey)
+				$currentHotkey = ""
+			EndIf
+
 			If $configBrowserMessages Then
 				$sMessageText = "Browser deactivated"
 			EndIf
+
 			If $g_bCursorLocked Then
 				ResetCursorLock()
 				If $configGameMessages Then
@@ -569,13 +601,13 @@ Func ToggleCursorLock()
 	EndIf
 
 	; Adjust for borders to confine inside the client area
-	Local $aBorders = $aWindowPosition[2] ; Get window borders
 	Local $aWindow = $aWindowPosition[1] ; Get window position
+	; Local $aBorders = $aWindowPosition[2] ; Get window borders
 	Local $aClientRect = $aWindowPosition[4] ; Get client rect
 	Local $bFullscreen = $aWindowPosition[5] ; Check if fullscreen
 
 	Local $iTop = 0, $iRight = 0, $iBottom = 0, $iLeft = 0
-	Local $iBorder = $aBorders[0] + $aBorders[1]
+	; Local $iBorder = $aBorders[0] + $aBorders[1]
 
 	; Display confirmation message and prepare the clipping dimensions
 	If $bFullscreen Then
@@ -598,7 +630,7 @@ Func ToggleCursorLock()
 			$aFullGameOffsets = False
 		EndIf
 
-		$iTop = $aWindow[1] + $iBorder
+		$iTop = $aWindow[1] ; + $iBorder
 		$iRight = $aWindow[0] + $aWindow[2]
 		$iBottom = $aWindow[1] + $aWindow[3]
 		$iLeft = $aWindow[0]
@@ -640,7 +672,7 @@ Func ToggleCursorLock()
 			$aWindowGameOffsets = False
 		EndIf
 
-		$iTop = $aClientRect[1] + $iBorder
+		$iTop = $aClientRect[1] ; + $iBorder
 		$iRight = $aClientRect[0] + $aClientRect[2]
 		$iBottom = $aClientRect[1] + $aClientRect[3]
 		$iLeft = $aClientRect[0]
@@ -666,30 +698,38 @@ Func ToggleCursorLock()
 		EndIf
 	EndIf
 
-	; Lock cursor to window
+	; Protect against bad offsets
+	If $iRight <= $iLeft Or $iBottom <= $iTop Then
+		DisplayMessage("Invalid cursor lock rectangle")
+		$bHotkeyLock = False
+		Return
+	EndIf
+
+	; Create the clipping rectangle
+	Local $tRect = _WinAPI_CreateRect($iLeft, $iTop, $iRight, $iBottom)
+	If @error Then
+		DisplayMessage("Failed to create rectangle structure")
+		$bHotkeyLock = False
+		Return
+	EndIf
+
+	; Apply cursor restriction
+	Local $aResult = DllCall("user32.dll", "bool", "ClipCursor", "ptr", DllStructGetPtr($tRect))
+
+	If @error Or Not IsArray($aResult) Or Not $aResult[0] Then
+		DisplayMessage("Failed to clip cursor")
+		$g_bCursorLocked = False
+		$bHotkeyLock = False
+		Return
+	EndIf
+
+	; Only mark as locked after ClipCursor succeeds
 	$g_bCursorLocked = True
 
 	; Store the active window's position for tracking
 	For $i = 0 To 3
 		$g_aBrowserWindow[$i] = $aWindow[$i]
 	Next
-
-	; Create the clipping rectangle
-	Local $tRect = _WinAPI_CreateRect($iLeft, $iTop, $iRight, $iBottom)
-	If @error Then
-		DisplayMessage("Failed to create rectangle structure")
-	Else
-		; Apply cursor restriction
-		Local $aResult
-		If @AutoItX64 Then
-			$aResult = DllCall("user32.dll", "bool", "ClipCursor", "ptr", DllStructGetPtr($tRect))
-		Else
-			$aResult = DllCall("user32.dll", "bool", "ClipCursor", "hwnd", DllStructGetPtr($tRect))
-		EndIf
-		If @error Or Not $aResult[0] Then
-			DisplayMessage("Failed to clip cursor: " & @error)
-		EndIf
-	EndIf
 
 	Sleep(5)
 	$bHotkeyLock = False
@@ -853,25 +893,31 @@ Func DisplayMessage($sText, $iDuration = $configDuration, $sFontName = $configFo
 		_GDIPlus_GraphicsSetTextRenderingHint($hGraphic, $GDIP_TEXTRENDERINGHINT_ANTIALIASGRIDFIT)
 
 		Local $hBrush = _GDIPlus_BrushCreateSolid(0x7F000000)
-		If @error Then Return SetError(1, 0, 0)
+		If @error Then
+			$bMessageLock = False
+			Return SetError(1, 0, 0)
+		EndIf
 
 		Local $hFormat = _GDIPlus_StringFormatCreate()
 		If @error Then
 			_GDIPlus_BrushDispose($hBrush)
+			$bMessageLock = False
 			Return SetError(2, 0, 0)
 		EndIf
 
-		Local $aRet = DllCall($hGDIP, "int", "GdipSetStringFormatAlign", "ptr", $hFormat, "int", 0)
+		Local $aRet = DllCall("gdiplus.dll", "int", "GdipSetStringFormatAlign", "ptr", $hFormat, "int", 0)
 		If @error Or $aRet[0] <> 0 Then
 			_GDIPlus_BrushDispose($hBrush)
 			_GDIPlus_StringFormatDispose($hFormat)
+			$bMessageLock = False
 			Return SetError(3, 0, 0)
 		EndIf
 
-		$aRet = DllCall($hGDIP, "int", "GdipSetStringFormatFlags", "ptr", $hFormat, "int", 0)
+		$aRet = DllCall("gdiplus.dll", "int", "GdipSetStringFormatFlags", "ptr", $hFormat, "int", 0)
 		If @error Or $aRet[0] <> 0 Then
 			_GDIPlus_BrushDispose($hBrush)
 			_GDIPlus_StringFormatDispose($hFormat)
+			$bMessageLock = False
 			Return SetError(4, 0, 0)
 		EndIf
 
@@ -964,19 +1010,15 @@ Func ClearMessageTimerStop()
 EndFunc
 
 Func ProcessCallbackCleanup()
-	If $bCallbackLock = True Then
-		Do
-			Sleep(10)
-		Until $bCallbackLock = False
-	EndIf
+	If $bCallbackLock Then Return
 	$bCallbackLock = True
+
 	; Go through the array and free callbacks that are safe to free
 	For $i = UBound($aCallbacksToFree) - 1 To 0 Step -1
-		If Not $bCallbackLock Then
-			DllCallbackFree($aCallbacksToFree[$i])
-			_ArrayDelete($aCallbacksToFree, $i)
-		EndIf
+		DllCallbackFree($aCallbacksToFree[$i])
+		_ArrayDelete($aCallbacksToFree, $i)
 	Next
+
 	$bCallbackLock = False
 EndFunc
 
@@ -984,14 +1026,15 @@ Func ClearMessageTimer($hWnd, $uMsg, $idEvent, $dwTime)
 	If $hGUI <> 0 And $bMessageLock = False Then
 		$bCallbackLock = True
 		Local $elapsed = TimerDiff($iMessageTimer)
-		If $elapsed >= $iMessageDuration Then ClearMessage()
+		If $elapsed >= $iMessageDuration Then ClearMessage(True)
 		$bCallbackLock = False
 	EndIf
 	Return 0
 EndFunc
 
-Func ClearMessage()
-	ClearMessageTimerStop()
+Func ClearMessage($bFromCallback = False)
+	If Not $bFromCallback Then ClearMessageTimerStop()
+
 	If $hGUI <> 0 Then
 		; Clear timer
 		$iMessageTimer = Null
@@ -1166,6 +1209,7 @@ EndFunc
 Global $configHotkey = ""
 Global $currentHotkey = ""
 Global $bHotkeyLock = False
+Global $g_oKeyMap = 0
 
 Global $configFontSize, $configFont, $configOpacity, $configDuration
 Global $configSplashMessages, $configBrowserMessages, $configGameMessages
@@ -1250,7 +1294,7 @@ Func ShowConfigWindow()
 			GUICtrlCreateLabel("Font:", 40, 410, 120, 20)
 			Local $fontList = _GetFontList()
 			Local $hFontDropdown = GUICtrlCreateCombo("", 160, 410, 180, 20)
-			For $i = 1 To $fontList[0]
+			For $i = 0 To UBound($fontList) - 1
 				GUICtrlSetData($hFontDropdown, $fontList[$i])
 			Next
 			GUICtrlSetData($hFontDropdown, $configFont)
@@ -1283,23 +1327,23 @@ Func ShowConfigWindow()
 
 		GUICtrlCreateLabel("Windowed Offsets:", 30, 310)
 		GUICtrlCreateLabel("T", 180, 310, 10, 20)
-		Local $hWindowOffsetT = GUICtrlCreateInput("", 195, 310, 35, 20, $ES_NUMBER)
+		Local $hWindowOffsetT = GUICtrlCreateInput("", 195, 310, 35, 20)
 		GUICtrlCreateLabel("R", 240, 310, 10, 20)
-		Local $hWindowOffsetR = GUICtrlCreateInput("", 255, 310, 35, 20, $ES_NUMBER)
+		Local $hWindowOffsetR = GUICtrlCreateInput("", 255, 310, 35, 20)
 		GUICtrlCreateLabel("B", 300, 310, 10, 20)
-		Local $hWindowOffsetB = GUICtrlCreateInput("", 315, 310, 35, 20, $ES_NUMBER)
+		Local $hWindowOffsetB = GUICtrlCreateInput("", 315, 310, 35, 20)
 		GUICtrlCreateLabel("L", 360, 310, 10, 20)
-		Local $hWindowOffsetL = GUICtrlCreateInput("", 375, 310, 35, 20, $ES_NUMBER)
+		Local $hWindowOffsetL = GUICtrlCreateInput("", 375, 310, 35, 20)
 
 		GUICtrlCreateLabel("Fullscreen Offsets:", 30, 340)
 		GUICtrlCreateLabel("T", 180, 340, 10, 20)
-		Local $hFullscreenOffsetT = GUICtrlCreateInput("", 195, 340, 35, 20, $ES_NUMBER)
+		Local $hFullscreenOffsetT = GUICtrlCreateInput("", 195, 340, 35, 20)
 		GUICtrlCreateLabel("R", 240, 340, 10, 20)
-		Local $hFullscreenOffsetR = GUICtrlCreateInput("", 255, 340, 35, 20, $ES_NUMBER)
+		Local $hFullscreenOffsetR = GUICtrlCreateInput("", 255, 340, 35, 20)
 		GUICtrlCreateLabel("B", 300, 340, 10, 20)
-		Local $hFullscreenOffsetB = GUICtrlCreateInput("", 315, 340, 35, 20, $ES_NUMBER)
+		Local $hFullscreenOffsetB = GUICtrlCreateInput("", 315, 340, 35, 20)
 		GUICtrlCreateLabel("L", 360, 340, 10, 20)
-		Local $hFullscreenOffsetL = GUICtrlCreateInput("", 375, 340, 35, 20, $ES_NUMBER)
+		Local $hFullscreenOffsetL = GUICtrlCreateInput("", 375, 340, 35, 20)
 
 		Local $hRemoveBrowser = GUICtrlCreateButton("Remove", 315, 390, 100, 30)
 		GUICtrlSetState($hRemoveBrowser, $GUI_HIDE)
@@ -1330,31 +1374,31 @@ Func ShowConfigWindow()
 
 		GUICtrlCreateLabel("Windowed Offsets:", 30, 310)
 		GUICtrlCreateLabel("T", 180, 310, 10, 20)
-		Local $hGameWindowOffsetT = GUICtrlCreateInput("", 195, 310, 35, 20, $ES_NUMBER)
+		Local $hGameWindowOffsetT = GUICtrlCreateInput("", 195, 310, 35, 20)
 		GUICtrlCreateLabel("R", 240, 310, 10, 20)
-		Local $hGameWindowOffsetR = GUICtrlCreateInput("", 255, 310, 35, 20, $ES_NUMBER)
+		Local $hGameWindowOffsetR = GUICtrlCreateInput("", 255, 310, 35, 20)
 		GUICtrlCreateLabel("B", 300, 310, 10, 20)
-		Local $hGameWindowOffsetB = GUICtrlCreateInput("", 315, 310, 35, 20, $ES_NUMBER)
+		Local $hGameWindowOffsetB = GUICtrlCreateInput("", 315, 310, 35, 20)
 		GUICtrlCreateLabel("L", 360, 310, 10, 20)
-		Local $hGameWindowOffsetL = GUICtrlCreateInput("", 375, 310, 35, 20, $ES_NUMBER)
+		Local $hGameWindowOffsetL = GUICtrlCreateInput("", 375, 310, 35, 20)
 
 		GUICtrlCreateLabel("Fullscreen Offsets:", 30, 340)
 		GUICtrlCreateLabel("T", 180, 340, 10, 20)
-		Local $hGameFullscreenOffsetT = GUICtrlCreateInput("", 195, 340, 35, 20, $ES_NUMBER)
+		Local $hGameFullscreenOffsetT = GUICtrlCreateInput("", 195, 340, 35, 20)
 		GUICtrlCreateLabel("R", 240, 340, 10, 20)
-		Local $hGameFullscreenOffsetR = GUICtrlCreateInput("", 255, 340, 35, 20, $ES_NUMBER)
+		Local $hGameFullscreenOffsetR = GUICtrlCreateInput("", 255, 340, 35, 20)
 		GUICtrlCreateLabel("B", 300, 340, 10, 20)
-		Local $hGameFullscreenOffsetB = GUICtrlCreateInput("", 315, 340, 35, 20, $ES_NUMBER)
+		Local $hGameFullscreenOffsetB = GUICtrlCreateInput("", 315, 340, 35, 20)
 		GUICtrlCreateLabel("L", 360, 340, 10, 20)
-		Local $hGameFullscreenOffsetL = GUICtrlCreateInput("", 375, 340, 35, 20, $ES_NUMBER)
+		Local $hGameFullscreenOffsetL = GUICtrlCreateInput("", 375, 340, 35, 20)
 
 		Local $hRemoveGame = GUICtrlCreateButton("Remove", 315, 390, 100, 30)
 		GUICtrlSetState($hRemoveGame, $GUI_HIDE)
 	GUICtrlCreateGroup("", -99, -99, 1, 1) ; End Game Group
 
 	Local $aGameControls = [$hGameID, $hGameDisplay, $hGameTitle, _
-										  $hGameWindowOffsetT, $hGameWindowOffsetR, $hGameWindowOffsetB, $hGameWindowOffsetL, _
-										  $hGameFullscreenOffsetT, $hGameFullscreenOffsetR, $hGameFullscreenOffsetB, $hGameFullscreenOffsetL]
+										$hGameWindowOffsetT, $hGameWindowOffsetR, $hGameWindowOffsetB, $hGameWindowOffsetL, _
+										$hGameFullscreenOffsetT, $hGameFullscreenOffsetR, $hGameFullscreenOffsetB, $hGameFullscreenOffsetL]
 
 	GUICtrlCreateTabItem("") ; Close Tabs
 
@@ -1387,24 +1431,30 @@ Func ShowConfigWindow()
 			Case $hSave
 				; Capture any changes made in browser and game list boxes
 				If $g_iSelectedBrowserIndex <> -1 Then
-						_CaptureBrowserFields($hBrowserList, $hBrowserID, $hBrowserDisplay, $hBrowserTitle, _
-							$hWindowOffsetT, $hWindowOffsetR, $hWindowOffsetB, $hWindowOffsetL, _
-							$hFullscreenOffsetT, $hFullscreenOffsetR, $hFullscreenOffsetB, $hFullscreenOffsetL)
+					_CaptureBrowserFields($hBrowserList, $hBrowserID, $hBrowserDisplay, $hBrowserTitle, _
+						$hWindowOffsetT, $hWindowOffsetR, $hWindowOffsetB, $hWindowOffsetL, _
+						$hFullscreenOffsetT, $hFullscreenOffsetR, $hFullscreenOffsetB, $hFullscreenOffsetL)
+
+					If @error Then ContinueLoop
 				EndIf
-				If $g_iSelectedGameIndex <> 1 Then
-						_CaptureGameFields($hGameList, $hGameID, $hGameDisplay, $hGameTitle, _
-							$hGameWindowOffsetT, $hGameWindowOffsetR, $hGameWindowOffsetB, $hGameWindowOffsetL, _
-							$hGameFullscreenOffsetT, $hGameFullscreenOffsetR, $hGameFullscreenOffsetB, $hGameFullscreenOffsetL)
+
+				If $g_iSelectedGameIndex <> -1 Then
+					_CaptureGameFields($hGameList, $hGameID, $hGameDisplay, $hGameTitle, _
+						$hGameWindowOffsetT, $hGameWindowOffsetR, $hGameWindowOffsetB, $hGameWindowOffsetL, _
+						$hGameFullscreenOffsetT, $hGameFullscreenOffsetR, $hGameFullscreenOffsetB, $hGameFullscreenOffsetL)
+
+					If @error Then ContinueLoop
 				EndIf
+
+				; Copy the temporary arrays back to globals and close the config window
+				$g_aBrowsers = $tmpBrowsers
+				$g_aGames = $tmpGames
 
 				; Then call SaveConfig passing all the controls
 				_SaveConfig($hHotkeyInput, $hLockFullscreen, $hLockWindowed, $hLockAllTitles, _
 					$hSplashMessages, $hBrowserMessages, $hGameMessages, $hFontDropdown, $hFontSize, _
 					$hOpacitySlider, $hDuration)
 
-				; Copy the temporary arrays back to globals and close the config window
-				$g_aBrowsers = $tmpBrowsers
-				$g_aGames = $tmpGames
 				GUIDelete($hConfigGUI)
 				TraySetClick(9)
 				ExitLoop
@@ -1432,6 +1482,11 @@ Func ShowConfigWindow()
 						_CaptureBrowserFields($hBrowserList, $hBrowserID, $hBrowserDisplay, $hBrowserTitle, _
 							$hWindowOffsetT, $hWindowOffsetR, $hWindowOffsetB, $hWindowOffsetL, _
 							$hFullscreenOffsetT, $hFullscreenOffsetR, $hFullscreenOffsetB, $hFullscreenOffsetL)
+
+						If @error Then
+							_GUICtrlListBox_SetCurSel($hBrowserList, $g_iSelectedBrowserIndex)
+							ContinueLoop
+						EndIf
 					EndIf
 
 					; Update the global selected browser index
@@ -1458,6 +1513,11 @@ Func ShowConfigWindow()
 						_CaptureGameFields($hGameList, $hGameID, $hGameDisplay, $hGameTitle, _
 							$hGameWindowOffsetT, $hGameWindowOffsetR, $hGameWindowOffsetB, $hGameWindowOffsetL, _
 							$hGameFullscreenOffsetT, $hGameFullscreenOffsetR, $hGameFullscreenOffsetB, $hGameFullscreenOffsetL)
+
+						If @error Then
+							_GUICtrlListBox_SetCurSel($hGameList, $g_iSelectedGameIndex)
+							ContinueLoop
+						EndIf
 					EndIf
 
 					; Update the global selected game index
@@ -1478,6 +1538,8 @@ Func ShowConfigWindow()
 					_CaptureBrowserFields($hBrowserList, $hBrowserID, $hBrowserDisplay, $hBrowserTitle, _
 						$hWindowOffsetT, $hWindowOffsetR, $hWindowOffsetB, $hWindowOffsetL, _
 						$hFullscreenOffsetT, $hFullscreenOffsetR, $hFullscreenOffsetB, $hFullscreenOffsetL)
+
+					If @error Then ContinueLoop
 				EndIf
 
 				; Generate a unique browser ID
@@ -1541,6 +1603,8 @@ Func ShowConfigWindow()
 					_CaptureGameFields($hGameList, $hGameID, $hGameDisplay, $hGameTitle, _
 						$hGameWindowOffsetT, $hGameWindowOffsetR, $hGameWindowOffsetB, $hGameWindowOffsetL, _
 						$hGameFullscreenOffsetT, $hGameFullscreenOffsetR, $hGameFullscreenOffsetB, $hGameFullscreenOffsetL)
+
+					If @error Then ContinueLoop
 				EndIf
 
 				; Generate a unique game ID
@@ -1768,7 +1832,12 @@ Func _CaptureBrowserFields($hBrowserList, $hBrowserID, $hBrowserDisplay, $hBrows
 	Local $title = StringStripWS(GUICtrlRead($hBrowserTitle), 3)
 
 	; Ensure valid values before saving
-	If $id = "" Or $display = "" Then	Return
+	If $id = "" Or $display = "" Then Return
+
+	If Not _IsValidRegex($title) Then
+		MsgBox(16, "Invalid Regex", "The browser title regex is invalid.")
+		Return SetError(1, 0, 0)
+	EndIf
 
 	; Save values
 	$tmpBrowsers[$index][0] = $id
@@ -1801,6 +1870,11 @@ Func _CaptureGameFields($hGameList, $hGameID, $hGameDisplay, $hGameTitle, _
 
 	; Ensure valid values before saving
 	If $id = "" Or $display = "" Then Return
+
+	If Not _IsValidRegex($title) Then
+		MsgBox(16, "Invalid Regex", "The game title regex is invalid.")
+		Return SetError(1, 0, 0)
+	EndIf
 
 	; Save values
 	$tmpGames[$index][0] = $id
@@ -1955,6 +2029,16 @@ Func _SaveConfig($hHotkeyInput, $hLockFullscreen, $hLockWindowed, $hLockAllTitle
 	MsgBox(64, "Settings Saved", "Configuration has been updated.")
 EndFunc
 
+Func _IsValidRegex($sRegex)
+	If StringStripWS($sRegex, 3) = "" Then Return False
+
+	StringRegExp("test", $sRegex)
+
+	If @error Then Return False
+
+	Return True
+EndFunc
+
 Func _GetUniqueID(ByRef $a2D, $sBase, $iCol = 0)
 	Local $sCandidate = $sBase
 	Local $iCounter = 1
@@ -2061,11 +2145,11 @@ Func _GetConfig()
 	Local $defaultBrowsers = "brave,chrome,firefox,edge,opera"
 	Local $defaultBrowserData = _
 		[ _
-			["brave", "Brave", ".*Brave$", "77,0,0,0", "0,0,0,0"], _
-			["chrome", "Chrome", ".*Google Chrome$", "83,0,0,0", "0,0,0,0"], _
-			["firefox", "Firefox", ".*Mozilla Firefox$", "81,0,0,0", "0,0,0,0"], _
-			["edge", "Edge", ".*Microsoft\s*.*Edge$", "70,0,0,0", "0,0,0,0"], _
-			["opera", "Opera", ".*Opera$", "83,4,4,56", "-4,0,0,0"] _
+			["brave", "Brave", ".*Brave$", "77,0,0,0", "4,0,0,0"], _
+			["chrome", "Chrome", ".*Google Chrome$", "83,0,0,0", "4,0,0,0"], _
+			["firefox", "Firefox", ".*Mozilla Firefox$", "81,0,0,0", "1,0,0,0"], _
+			["edge", "Edge", ".*Microsoft\s*.*Edge$", "70,0,0,0", "1,0,0,0"], _
+			["opera", "Opera", ".*Opera$", "83,4,4,56", "0,0,0,0"] _
 		]
 
 	; Read browser IDs from the INI file
@@ -2212,6 +2296,9 @@ Func _CaptureHotkey($hInput)
 
 		; Detect multiple key presses
 		For $i = 1 To 255
+			If $i >= 1 And $i <= 6 Then ContinueLoop
+			If $i = 0x7B Then ContinueLoop ; Skip F12
+
 			If _IsPressed(Hex($i, 2)) Then
 				Local $keyName = _GetKeyName(Hex($i, 2))
 				If $keyName <> "" And Not _ArrayContains($pressedKeys, $keyName) Then
@@ -2284,149 +2371,157 @@ Func _FilterModifiers(ByRef $modifiers)
 	Return $filtered
 EndFunc
 
-Func _GetKeyName($hexKey)
-	Local $keyMap = ObjCreate("Scripting.Dictionary")
+Func _InitKeyMap()
+	If IsObj($g_oKeyMap) Then Return
+
+	$g_oKeyMap = ObjCreate("Scripting.Dictionary")
 
 	; Mouse Buttons
-	;$keyMap.Add("01", "LMB")
-	;$keyMap.Add("02", "RMB")
-	;$keyMap.Add("04", "MMB")
-	;$keyMap.Add("05", "MB4")
-	;$keyMap.Add("06", "MB5")
+	;$g_oKeyMap.Add("01", "LMB")
+	;$g_oKeyMap.Add("02", "RMB")
+	;$g_oKeyMap.Add("04", "MMB")
+	;$g_oKeyMap.Add("05", "MB4")
+	;$g_oKeyMap.Add("06", "MB5")
 
 	; Common Keys
-	$keyMap.Add("03", "CANCEL")
-	$keyMap.Add("08", "BACKSPACE")
-	$keyMap.Add("09", "TAB")
-	$keyMap.Add("0D", "ENTER")
-	$keyMap.Add("10", "SHIFT")
-	$keyMap.Add("11", "CTRL")
-	$keyMap.Add("12", "ALT")
-	$keyMap.Add("1B", "ESC")
-	$keyMap.Add("20", "SPACE")
-	$keyMap.Add("5B", "LWIN")
-	$keyMap.Add("5C", "RWIN")
+	$g_oKeyMap.Add("03", "CANCEL")
+	$g_oKeyMap.Add("08", "BACKSPACE")
+	$g_oKeyMap.Add("09", "TAB")
+	$g_oKeyMap.Add("0D", "ENTER")
+	$g_oKeyMap.Add("10", "SHIFT")
+	$g_oKeyMap.Add("11", "CTRL")
+	$g_oKeyMap.Add("12", "ALT")
+	$g_oKeyMap.Add("1B", "ESC")
+	$g_oKeyMap.Add("20", "SPACE")
+	$g_oKeyMap.Add("5B", "LWIN")
+	$g_oKeyMap.Add("5C", "RWIN")
 
 	; Additional Navigation Keys
-	$keyMap.Add("21", "PGUP")
-	$keyMap.Add("22", "PGDN")
-	$keyMap.Add("23", "END")
-	$keyMap.Add("24", "HOME")
-	$keyMap.Add("25", "LEFT")
-	$keyMap.Add("26", "UP")
-	$keyMap.Add("27", "RIGHT")
-	$keyMap.Add("28", "DOWN")
-	$keyMap.Add("2D", "INSERT")
-	$keyMap.Add("2E", "DELETE")
+	$g_oKeyMap.Add("21", "PGUP")
+	$g_oKeyMap.Add("22", "PGDN")
+	$g_oKeyMap.Add("23", "END")
+	$g_oKeyMap.Add("24", "HOME")
+	$g_oKeyMap.Add("25", "LEFT")
+	$g_oKeyMap.Add("26", "UP")
+	$g_oKeyMap.Add("27", "RIGHT")
+	$g_oKeyMap.Add("28", "DOWN")
+	$g_oKeyMap.Add("2D", "INSERT")
+	$g_oKeyMap.Add("2E", "DELETE")
 
 	; Additional System Keys
-	$keyMap.Add("2C", "PRTSC")
-	$keyMap.Add("13", "PAUSE")
-	$keyMap.Add("14", "CAPSLOCK")
-	$keyMap.Add("91", "SCROLLLOCK")
-	$keyMap.Add("5D", "APPS")
+	$g_oKeyMap.Add("2C", "PRTSC")
+	$g_oKeyMap.Add("13", "PAUSE")
+	$g_oKeyMap.Add("14", "CAPSLOCK")
+	$g_oKeyMap.Add("91", "SCROLLLOCK")
+	$g_oKeyMap.Add("5D", "APPS")
 
 	; Numpad Keys
-	$keyMap.Add("60", "NUMPAD0")
-	$keyMap.Add("61", "NUMPAD1")
-	$keyMap.Add("62", "NUMPAD2")
-	$keyMap.Add("63", "NUMPAD3")
-	$keyMap.Add("64", "NUMPAD4")
-	$keyMap.Add("65", "NUMPAD5")
-	$keyMap.Add("66", "NUMPAD6")
-	$keyMap.Add("67", "NUMPAD7")
-	$keyMap.Add("68", "NUMPAD8")
-	$keyMap.Add("69", "NUMPAD9")
-	$keyMap.Add("6A", "NUMPADMULT")
-	$keyMap.Add("6B", "NUMPADADD")
-	$keyMap.Add("6D", "NUMPADSUB")
-	$keyMap.Add("6E", "NUMPADDECIMAL")
-	$keyMap.Add("6F", "NUMPADDIV")
+	$g_oKeyMap.Add("60", "NUMPAD0")
+	$g_oKeyMap.Add("61", "NUMPAD1")
+	$g_oKeyMap.Add("62", "NUMPAD2")
+	$g_oKeyMap.Add("63", "NUMPAD3")
+	$g_oKeyMap.Add("64", "NUMPAD4")
+	$g_oKeyMap.Add("65", "NUMPAD5")
+	$g_oKeyMap.Add("66", "NUMPAD6")
+	$g_oKeyMap.Add("67", "NUMPAD7")
+	$g_oKeyMap.Add("68", "NUMPAD8")
+	$g_oKeyMap.Add("69", "NUMPAD9")
+	$g_oKeyMap.Add("6A", "NUMPADMULT")
+	$g_oKeyMap.Add("6B", "NUMPADADD")
+	$g_oKeyMap.Add("6D", "NUMPADSUB")
+	$g_oKeyMap.Add("6E", "NUMPADDECIMAL")
+	$g_oKeyMap.Add("6F", "NUMPADDIV")
 
 	; OEM / Punctuation Keys
-	$keyMap.Add("BA", "SEMICOLON")			; VK_OEM_1 (e.g., ;)
-	$keyMap.Add("BB", "EQUALS")				; VK_OEM_PLUS (e.g., =)
-	$keyMap.Add("BC", "COMMA")				; VK_OEM_COMMA (e.g., ,)
-	$keyMap.Add("BD", "MINUS")					; VK_OEM_MINUS (e.g., -)
-	$keyMap.Add("BE", "PERIOD")				; VK_OEM_PERIOD (e.g., .)
-	$keyMap.Add("BF", "FORWARD_SLASH")	; VK_OEM_2 (e.g., /)
-	$keyMap.Add("C0", "TILDE")					; VK_OEM_3 (e.g., ~ or `)
-	$keyMap.Add("DB", "OPEN_BRACKET")	; VK_OEM_4 (e.g., [)
-	$keyMap.Add("DC", "BACKSLASH")			; VK_OEM_5 (e.g., \)
-	$keyMap.Add("DD", "CLOSE_BRACKET")	; VK_OEM_6 (e.g., ])
-	$keyMap.Add("DE", "APOSTROPHE")		; VK_OEM_7 (e.g., ')
-	$keyMap.Add("DF", "OEM_8")
+	$g_oKeyMap.Add("BA", "SEMICOLON")			; VK_OEM_1 (e.g., ;)
+	$g_oKeyMap.Add("BB", "EQUALS")					; VK_OEM_PLUS (e.g., =)
+	$g_oKeyMap.Add("BC", "COMMA")					; VK_OEM_COMMA (e.g., ,)
+	$g_oKeyMap.Add("BD", "MINUS")					; VK_OEM_MINUS (e.g., -)
+	$g_oKeyMap.Add("BE", "PERIOD")					; VK_OEM_PERIOD (e.g., .)
+	$g_oKeyMap.Add("BF", "FORWARD_SLASH")	; VK_OEM_2 (e.g., /)
+	$g_oKeyMap.Add("C0", "TILDE")						; VK_OEM_3 (e.g., ~ or `)
+	$g_oKeyMap.Add("DB", "OPEN_BRACKET")		; VK_OEM_4 (e.g., [)
+	$g_oKeyMap.Add("DC", "BACKSLASH")			; VK_OEM_5 (e.g., \)
+	$g_oKeyMap.Add("DD", "CLOSE_BRACKET")	; VK_OEM_6 (e.g., ])
+	$g_oKeyMap.Add("DE", "APOSTROPHE")			; VK_OEM_7 (e.g., ')
+	$g_oKeyMap.Add("DF", "OEM_8")
 
 	; Media / Special Function Keys
-	;$keyMap.Add("AD", "VOLUME_MUTE")	; Volume Mute
-	;$keyMap.Add("AE", "VOLUME_DOWN")	; Volume Down
-	;$keyMap.Add("AF", "VOLUME_UP")		; Volume Up
-	;$keyMap.Add("B0", "NEXT_TRACK")		; Next Track
-	;$keyMap.Add("B1", "PREV_TRACK")		; Previous Track
-	;$keyMap.Add("B2", "STOP")					; Stop
-	;$keyMap.Add("B3", "PLAY_PAUSE")		; Play/Pause
+	;$g_oKeyMap.Add("AD", "VOLUME_MUTE")		; Volume Mute
+	;$g_oKeyMap.Add("AE", "VOLUME_DOWN")		; Volume Down
+	;$g_oKeyMap.Add("AF", "VOLUME_UP")			; Volume Up
+	;$g_oKeyMap.Add("B0", "NEXT_TRACK")			; Next Track
+	;$g_oKeyMap.Add("B1", "PREV_TRACK")			; Previous Track
+	;$g_oKeyMap.Add("B2", "STOP")						; Stop
+	;$g_oKeyMap.Add("B3", "PLAY_PAUSE")			; Play/Pause
 
 	; Additional Special Keys
-	;$keyMap.Add("0C", "CLEAR")					; Clear key (often on numpad)
-	;$keyMap.Add("29", "SELECT")				; Select key
-	;$keyMap.Add("5F", "SLEEP")					; Sleep key
+	;$g_oKeyMap.Add("0C", "CLEAR")					; Clear key (often on numpad)
+	;$g_oKeyMap.Add("29", "SELECT")					; Select key
+	;$g_oKeyMap.Add("5F", "SLEEP")					; Sleep key
 
 	; Browser Keys
-	;$keyMap.Add("A6", "BROWSER_BACK")
-	;$keyMap.Add("A7", "BROWSER_FORWARD")
-	;$keyMap.Add("A8", "BROWSER_REFRESH")
-	;$keyMap.Add("A9", "BROWSER_STOP")
-	;$keyMap.Add("AA", "BROWSER_SEARCH")
-	;$keyMap.Add("AB", "BROWSER_FAVORITES")
-	;$keyMap.Add("AC", "BROWSER_HOME")
+	;$g_oKeyMap.Add("A6", "BROWSER_BACK")
+	;$g_oKeyMap.Add("A7", "BROWSER_FORWARD")
+	;$g_oKeyMap.Add("A8", "BROWSER_REFRESH")
+	;$g_oKeyMap.Add("A9", "BROWSER_STOP")
+	;$g_oKeyMap.Add("AA", "BROWSER_SEARCH")
+	;$g_oKeyMap.Add("AB", "BROWSER_FAVORITES")
+	;$g_oKeyMap.Add("AC", "BROWSER_HOME")
 
 	; Launch/Application Keys
-	;$keyMap.Add("B4", "LAUNCH_MAIL")
-	;$keyMap.Add("B5", "LAUNCH_MEDIA_SELECT")
-	;$keyMap.Add("B6", "LAUNCH_APP1")		; Often used for Calculator
-	;$keyMap.Add("B7", "LAUNCH_APP2")		; Additional launch key
+	;$g_oKeyMap.Add("B4", "LAUNCH_MAIL")
+	;$g_oKeyMap.Add("B5", "LAUNCH_MEDIA_SELECT")
+	;$g_oKeyMap.Add("B6", "LAUNCH_APP1")		; Often used for Calculator
+	;$g_oKeyMap.Add("B7", "LAUNCH_APP2")		; Additional launch key
 
 	; Additional OEM / Special Keys
-	;$keyMap.Add("E1", "OEM_AX")
-	;$keyMap.Add("E2", "OEM_102")
-	;$keyMap.Add("E5", "PROCESSKEY")
+	;$g_oKeyMap.Add("E1", "OEM_AX")
+	;$g_oKeyMap.Add("E2", "OEM_102")
+	;$g_oKeyMap.Add("E5", "PROCESSKEY")
 
 	; Additional Rare Keys
-	;$keyMap.Add("F6", "ATTN")
-	;$keyMap.Add("F7", "CRSEL")
-	;$keyMap.Add("F8", "EXSEL")
-	;$keyMap.Add("F9", "EREOF")
-	;$keyMap.Add("FA", "PLAY")
-	;$keyMap.Add("FB", "ZOOM")
-	;$keyMap.Add("FC", "NONAME")
-	;$keyMap.Add("FD", "PA1")
-	;$keyMap.Add("FE", "OEM_CLEAR")
+	;$g_oKeyMap.Add("F6", "ATTN")
+	;$g_oKeyMap.Add("F7", "CRSEL")
+	;$g_oKeyMap.Add("F8", "EXSEL")
+	;$g_oKeyMap.Add("F9", "EREOF")
+	;$g_oKeyMap.Add("FA", "PLAY")
+	;$g_oKeyMap.Add("FB", "ZOOM")
+	;$g_oKeyMap.Add("FC", "NONAME")
+	;$g_oKeyMap.Add("FD", "PA1")
+	;$g_oKeyMap.Add("FE", "OEM_CLEAR")
 
 	; Numbers
 	For $i = 0 To 9
-		$keyMap.Add(Hex(48 + $i, 2), String($i))
+		$g_oKeyMap.Add(Hex(48 + $i, 2), String($i))
 	Next
 
 	; Letters
 	For $i = 0 To 25
-		$keyMap.Add(Hex(65 + $i, 2), Chr(65 + $i))
+		$g_oKeyMap.Add(Hex(65 + $i, 2), Chr(65 + $i))
 	Next
 
 	; Function keys
 	For $i = 1 To 24
 		If $i = 12 Then ContinueLoop ; Skip F12 since it's reserved by Windows
-		$keyMap.Add(Hex(111 + $i, 2), "F" & $i)
+		$g_oKeyMap.Add(Hex(111 + $i, 2), "F" & $i)
 	Next
 
 	; Modifier Keys
-	$keyMap.Add("A0", "LSHIFT")
-	$keyMap.Add("A1", "RSHIFT")
-	$keyMap.Add("A2", "LCTRL")
-	$keyMap.Add("A3", "RCTRL")
-	$keyMap.Add("A4", "LALT")
-	$keyMap.Add("A5", "RALT")
+	$g_oKeyMap.Add("A0", "LSHIFT")
+	$g_oKeyMap.Add("A1", "RSHIFT")
+	$g_oKeyMap.Add("A2", "LCTRL")
+	$g_oKeyMap.Add("A3", "RCTRL")
+	$g_oKeyMap.Add("A4", "LALT")
+	$g_oKeyMap.Add("A5", "RALT")
+EndFunc
 
-	If $keyMap.Exists($hexKey) Then Return $keyMap.Item($hexKey)
+Func _GetKeyName($hexKey)
+	_InitKeyMap()
+
+	If IsObj($g_oKeyMap) And $g_oKeyMap.Exists($hexKey) Then
+		Return $g_oKeyMap.Item($hexKey)
+	EndIf
 
 	Return "KEY_" & $hexKey
 EndFunc
@@ -2511,6 +2606,7 @@ Func ConvertToHotkeyString($sCaptured)
 				EndIf
 		EndSwitch
 	Next
+	If Not $bBaseFound Then Return ""
 	Return $sHotkey
 EndFunc
 
