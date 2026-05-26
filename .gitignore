@@ -1,0 +1,10 @@
+# Fractal development directory
+/_related files
+
+# Windows system files
+Thumbs.db
+desktop.ini
+
+# Local config / binaries
+*.ini
+*.exe
