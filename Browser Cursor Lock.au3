@@ -50,6 +50,7 @@ EndIf
 ; ========== ========== ========== ========== ==========
 
 Global $g_hActiveWnd = 0 ; Handle for the active browser window
+
 Global $g_bCursorLocked = False
 Global $g_aBrowserWindow[4] = [0, 0, 0, 0] ; Saved rect of the browser window during toggle
 
@@ -58,6 +59,7 @@ Global $game = -1 ; Index for the currently detected game
 
 Global $g_hLastHwnd = 0 ; Last detected window handle
 Global $g_sLastWindowTitle = "" ; Last detected window title
+Global $g_bTransientWindow = False
 
 ; ========== ========== ========== ========== ==========
 
@@ -223,16 +225,39 @@ Func ProcessWindow()
 	; Ignore if the GUI itself is active
 	If $currentHwnd = $hGUI And $hGUI <> 0 Then Return
 
+	; =====
+
+	; Treat the Windows taskbar as a transient window
+	If IsTaskbarWindow($currentHwnd) Then
+		$g_bTransientWindow = True
+
+		If $g_bCursorLocked Then ResetCursorLock()
+
+		Return
+	EndIf
+
+	; We are no longer in a transient window
+	$g_bTransientWindow = False
+
+	; =====
+
 	Local $aWinPos = WinGetPos($currentHwnd) ; Cheap early error catch
 	If @error Then Return ; Exit if we can't get window position
 
 	Local $currentWindow = WinGetTitle($currentHwnd)
-	If $currentWindow = "" Then ; Skip processing if title hasn't changed
+
+	; =====
+
+	; Handle other windows without a title
+	If $currentWindow = "" Then
 		If $g_bCursorLocked Then ResetCursorLock()
 
 		$browser = -1
 		$game = -1
 		$g_hActiveWnd = 0
+
+		$g_hLastHwnd = 0
+		$g_sLastWindowTitle = ""
 
 		If $currentHotkey <> "" Then
 			HotKeySet($currentHotkey)
@@ -241,6 +266,8 @@ Func ProcessWindow()
 
 		Return
 	EndIf
+
+	; =====
 
 	Local $iBrowserIndex = -1
 	Local $iGameIndex = -1
@@ -541,6 +568,14 @@ Func IsWindowFullscreen($aWindow, $aMonitor, $aClientRect)
 	Return False
 EndFunc
 
+Func IsTaskbarWindow($hWnd)
+	Local $sClass = _WinAPI_GetClassName($hWnd)
+	If @error Or $sClass = "" Then Return False
+
+	Return $sClass = "Shell_TrayWnd" Or _
+		$sClass = "Shell_SecondaryTrayWnd"
+EndFunc
+
 Func GetWindowBorders()
 	Local $sRegKey = "HKEY_CURRENT_USER\Control Panel\Desktop\WindowMetrics"
 
@@ -584,6 +619,9 @@ EndFunc
 #Region CursorLock
 
 Func ToggleCursorLock()
+	; Prevent toggle on transient window
+	If $g_bTransientWindow Then Return
+
 	; Prevent multiple presses
 	If $bHotkeyLock Then Return
 	$bHotkeyLock = True
@@ -660,7 +698,6 @@ Func ToggleCursorLock()
 	; =====
 
 	Local $iTop = 0, $iRight = 0, $iBottom = 0, $iLeft = 0
-	; Local $iBorder = $aBorders[0] + $aBorders[1]
 
 	; Display confirmation message and prepare the clipping dimensions
 	If $bFullscreen Then
@@ -683,7 +720,7 @@ Func ToggleCursorLock()
 			$aFullGameOffsets = False
 		EndIf
 
-		$iTop = $aWindow[1] ; + $iBorder
+		$iTop = $aWindow[1]
 		$iRight = $aWindow[0] + $aWindow[2]
 		$iBottom = $aWindow[1] + $aWindow[3]
 		$iLeft = $aWindow[0]
@@ -725,7 +762,7 @@ Func ToggleCursorLock()
 			$aWindowGameOffsets = False
 		EndIf
 
-		$iTop = $aClientRect[1] ; + $iBorder
+		$iTop = $aClientRect[1]
 		$iRight = $aClientRect[0] + $aClientRect[2]
 		$iBottom = $aClientRect[1] + $aClientRect[3]
 		$iLeft = $aClientRect[0]
