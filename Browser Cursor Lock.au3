@@ -10,6 +10,7 @@
 
 #include <WinAPI.au3>
 #include <WinAPIHObj.au3> ; Used by the rounded rectangle
+#include <WinAPIGdi.au3>
 #include <WinAPIRes.au3> ; Used to get the system fonts
 #include <GUIConstantsEx.au3>
 #include <GUIListBox.au3>
@@ -89,6 +90,11 @@ Func _Main()
 	If $configSplashMessages Then DisplayMessage("Browser Cursor Lock")
 
 	While Not $bShutdown
+		; Display a pending message
+		ProcessPendingMessage()
+
+		; ========== ========== ==========
+
 		ProcessWindow()
 		If @AutoItX64 Then
 			ProcessCallbackCleanup()
@@ -155,6 +161,36 @@ Func ExitScript()
 
 		If $g_bCursorLocked Then ResetCursorLock()
 
+		; Clean up message GUI and resources
+		ClearMessage()
+
+		; =====
+
+		; Clean up reusable GDI+ objects
+
+		If $g_hFont <> 0 Then
+			_GDIPlus_FontDispose($g_hFont)
+			$g_hFont = 0
+		EndIf
+
+		If $g_hFontFamily <> 0 Then
+			_GDIPlus_FontFamilyDispose($g_hFontFamily)
+			$g_hFontFamily = 0
+		EndIf
+
+		If $g_hFormat <> 0 Then
+			_GDIPlus_StringFormatDispose($g_hFormat)
+			$g_hFormat = 0
+		EndIf
+
+		If $g_hBrush <> 0 Then
+			_GDIPlus_BrushDispose($g_hBrush)
+			$g_hBrush = 0
+		EndIf
+
+		; =====
+
+		; Shut down GDI
 		_GDIPlus_Shutdown()
 
 		If $g_hMutex Then
@@ -187,7 +223,7 @@ Func ProcessWindow()
 	; Ignore if the GUI itself is active
 	If $currentHwnd = $hGUI And $hGUI <> 0 Then Return
 
-	Local $aWinPos = WinGetPos($currentHwnd)
+	Local $aWinPos = WinGetPos($currentHwnd) ; Cheap early error catch
 	If @error Then Return ; Exit if we can't get window position
 
 	Local $currentWindow = WinGetTitle($currentHwnd)
@@ -325,23 +361,24 @@ Func ProcessWindow()
 				If $g_bCursorLocked Then
 
 					; Get the latest window position
-					Local $aNewWindowPos = WindowPosition($g_hActiveWnd)
-					If Not IsArray($aNewWindowPos) Then Return
+					Local $aWinPos = WindowPosition($g_hActiveWnd)
 
-					; Ensure you compare against the correct array
-					If Not IsArray($aNewWindowPos[1]) Then Return
+					; Proceed if we sucessfully captured the window's position
+					If Not @error And IsArray($aWinPos) Then
 
-					Local $aWinPos = $aNewWindowPos[1]
-
-					; Compare against stored window position
-					If $aWinPos[0] <> $g_aBrowserWindow[0] Or _
-					$aWinPos[1] <> $g_aBrowserWindow[1] Or _
-					$aWinPos[2] <> $g_aBrowserWindow[2] Or _
-					$aWinPos[3] <> $g_aBrowserWindow[3] Then
+						; Compare against stored window position
+						If $aWinPos[0] <> $g_aBrowserWindow[0] Or _
+						$aWinPos[1] <> $g_aBrowserWindow[1] Or _
+						$aWinPos[2] <> $g_aBrowserWindow[2] Or _
+						$aWinPos[3] <> $g_aBrowserWindow[3] Then
+							$sMessageText = "Cursor Released"
+							ResetCursorLock()
+						EndIf
+					Else
+						; Window position is unavailable because the window was closed or minimized
 						$sMessageText = "Cursor Released"
 						ResetCursorLock()
 					EndIf
-
 				EndIf
 			EndIf
 		Else
@@ -393,119 +430,115 @@ Func ProcessWindow()
 	If $sMessageText <> "" Then DisplayMessage($sMessageText)
 EndFunc
 
-Func WindowPosition($hWnd)
-	; Get window position
-	Local $aWinPos = WinGetPos($hWnd)
-	If @error Then Return SetError(1, 0, 0)
-	If Not IsArray($aWinPos) Or UBound($aWinPos) < 4 Then Return SetError(2, 0, 0)
-
-	; Set the window frame variables and calculate the area of the window
-	Local $iWindowX = $aWinPos[0], $iWindowY = $aWinPos[1]
-	Local $iWindowWidth = $aWinPos[2], $iWindowHeight = $aWinPos[3]
-	Local $iWindowArea = $iWindowWidth * $iWindowHeight
-
-	; Get borders from registry
+Func WindowBorders()
 	Local $aBorders = GetWindowBorders()
-	If @error Then
-		Local $aBorders[2] = [1, 3] ; Error case
-	EndIf
+	If @error Or Not IsArray($aBorders) Then Return SetError(1, 0, 0)
 
-	; Extract border values
-	Local $iBorderTop = $aBorders[0] ; Title Bar + Padded Border
-	Local $iBorderRight = $aBorders[1]
-	Local $iBorderBottom = $aBorders[0]
-	Local $iBorderLeft = $aBorders[1]
+	Local $aWindowBorders[4] = [ _
+		$aBorders[0], _
+		$aBorders[1], _
+		$aBorders[0], _
+		$aBorders[1] _
+	]
 
-	; Calculate client area
-	Local $iClientX = $iWindowX + $iBorderLeft
-	Local $iClientY = $iWindowY + $iBorderTop
-	Local $iClientWidth = $iWindowWidth - ($iBorderLeft + $iBorderRight)
-	Local $iClientHeight = $iWindowHeight - ($iBorderTop + $iBorderBottom)
+	; [0] = Top
+	; [1] = Right
+	; [2] = Bottom
+	; [3] = Left
+	Return $aWindowBorders
+EndFunc
 
-	; ==========
+Func WindowClient($aWindow, $aBorders)
+	If Not IsArray($aWindow) Or UBound($aWindow) < 4 Then Return SetError(1, 0, 0)
+	If Not IsArray($aBorders) Or UBound($aBorders) < 4 Then Return SetError(2, 0, 0)
 
-	; Get client rectangle size
+	Local $aClient[4] = [ _
+		$aWindow[0] + $aBorders[3], _
+		$aWindow[1] + $aBorders[0], _
+		$aWindow[2] - ($aBorders[3] + $aBorders[1]), _
+		$aWindow[3] - ($aBorders[0] + $aBorders[2]) _
+	]
+
+	Return $aClient
+EndFunc
+
+Func WindowClientRect($hWnd)
 	Local $tClientRect = _WinAPI_GetClientRect($hWnd)
-	Local $iClientRectWidth = DllStructGetData($tClientRect, 3)
-	Local $iClientRectHeight = DllStructGetData($tClientRect, 4)
+	If @error Then Return SetError(1, 0, 0)
 
-	; Create a struct to hold the converted client position
+	Local $iWidth = DllStructGetData($tClientRect, 3)
+	Local $iHeight = DllStructGetData($tClientRect, 4)
+
 	Local $tPoint = DllStructCreate("int X; int Y")
 	DllStructSetData($tPoint, "X", 0)
 	DllStructSetData($tPoint, "Y", 0)
 
-	; Convert client (0,0) to absolute screen coordinates
 	_WinAPI_ClientToScreen($hWnd, DllStructGetPtr($tPoint))
+	If @error Then Return SetError(2, 0, 0)
 
-	Local $iClientRectX = DllStructGetData($tPoint, "X")
-	Local $iClientRectY = DllStructGetData($tPoint, "Y")
+	Local $aClientRect[4] = [ _
+		DllStructGetData($tPoint, "X"), _
+		DllStructGetData($tPoint, "Y"), _
+		$iWidth, _
+		$iHeight _
+	]
 
-	; ==========
+	Return $aClientRect
+EndFunc
 
-	; Retrieve all monitors
-	Local $aMonitors = _WinAPI_EnumDisplayMonitors()
-	If Not IsArray($aMonitors) Then Return SetError(2, 0, 0)
+Func WindowMonitor($hWnd)
+	; Validate window
+	If Not $hWnd Or Not WinExists($hWnd) Then Return SetError(1, 0, 0)
 
-	Local $bestMonitor = -1, $maxCoverage = 0
-	Local $aMonitor[6] = [0, 0, 0, 0, 0, 0]
+	; Get the monitor with the largest intersection with the window
+	Local $hMonitor = _WinAPI_MonitorFromWindow($hWnd)
+	If Not $hMonitor Then Return SetError(2, 0, 0)
 
-	For $i = 1 To $aMonitors[0][0]
-		Local $hMonitor = $aMonitors[$i][0]
-		Local $aMonitorInfo = _WinAPI_GetMonitorInfo($hMonitor)
-		If @error Or Not IsArray($aMonitorInfo) Then ContinueLoop
+	; Get monitor information
+	Local $aMonitorInfo = _WinAPI_GetMonitorInfo($hMonitor)
+	If @error Or Not IsArray($aMonitorInfo) Then Return SetError(3, 0, 0)
 
-		Local $iMonitorLeft = DllStructGetData($aMonitorInfo[0], "Left")
-		Local $iMonitorTop = DllStructGetData($aMonitorInfo[0], "Top")
-		Local $iMonitorRight = DllStructGetData($aMonitorInfo[0], "Right")
-		Local $iMonitorBottom = DllStructGetData($aMonitorInfo[0], "Bottom")
+	; Get monitor rectangle
+	Local $iLeft = DllStructGetData($aMonitorInfo[0], "Left")
+	Local $iTop = DllStructGetData($aMonitorInfo[0], "Top")
+	Local $iRight = DllStructGetData($aMonitorInfo[0], "Right")
+	Local $iBottom = DllStructGetData($aMonitorInfo[0], "Bottom")
 
-		; Calculate intersection area
-		Local $iOverlapLeft = ($iWindowX > $iMonitorLeft) ? $iWindowX : $iMonitorLeft
-		Local $iOverlapTop = ($iWindowY > $iMonitorTop) ? $iWindowY : $iMonitorTop
-		Local $iOverlapRight = ($iWindowX + $iWindowWidth < $iMonitorRight) ? ($iWindowX + $iWindowWidth) : $iMonitorRight
-		Local $iOverlapBottom = ($iWindowY + $iWindowHeight < $iMonitorBottom) ? ($iWindowY + $iWindowHeight) : $iMonitorBottom
+	Local $aMonitor[4] = [ _
+		$iLeft, _
+		$iTop, _
+		$iRight - $iLeft, _
+		$iBottom - $iTop _
+	]
 
-		Local $iOverlapWidth = $iOverlapRight - $iOverlapLeft
-		Local $iOverlapHeight = $iOverlapBottom - $iOverlapTop
+	; [0] = X
+	; [1] = Y
+	; [2] = Width
+	; [3] = Height
+	Return $aMonitor
+EndFunc
 
-		If $iOverlapWidth > 0 And $iOverlapHeight > 0 Then
-			Local $iOverlapArea = $iOverlapWidth * $iOverlapHeight
-			Local $iCoverage = ($iOverlapArea / $iWindowArea) * 100
+Func WindowPosition($hWnd)
+	Local $aWinPos = WinGetPos($hWnd)
+	If @error Or Not IsArray($aWinPos) Or UBound($aWinPos) < 4 Then _
+		Return SetError(1, 0, 0)
+	Return $aWinPos
+EndFunc
 
-			; Keep track of the monitor with the most coverage
-			If $iCoverage > $maxCoverage Then
-				$maxCoverage = $iCoverage
-				$bestMonitor = $hMonitor
-				$aMonitor[0] = $iMonitorLeft
-				$aMonitor[1] = $iMonitorTop
-				$aMonitor[2] = $iMonitorRight - $iMonitorLeft
-				$aMonitor[3] = $iMonitorBottom - $iMonitorTop
-				$aMonitor[4] = $iCoverage
-				$aMonitor[5] = $i
-			EndIf
-		EndIf
-	Next
+Func IsWindowFullscreen($aWindow, $aMonitor, $aClientRect)
+	If $aWindow[0] = $aMonitor[0] And _
+		$aWindow[1] = $aMonitor[1] And _
+		$aWindow[2] = $aMonitor[2] And _
+		$aWindow[3] = $aMonitor[3] And _
+		$aClientRect[0] = $aMonitor[0] And _
+		$aClientRect[1] = $aMonitor[1] And _
+		$aClientRect[2] = $aMonitor[2] And _
+		$aClientRect[3] = $aMonitor[3] Then
 
-	; Determine if the window is fullscreen
-	Local $bWindowFullscreen = False
-	If $iWindowX = $aMonitor[0] And $iWindowY = $aMonitor[1] And _
-	$iWindowWidth = $aMonitor[2] And $iWindowHeight = $aMonitor[3] And _
-	$iClientRectX = $aMonitor[0] And $iClientRectY = $aMonitor[1] And _
-	$iClientRectWidth = $aMonitor[2] And $iClientRectHeight = $aMonitor[3] Then
-		$bWindowFullscreen = True
+		Return True
 	EndIf
 
-	; ==========
-
-	Local $aWindow[4] = [$iWindowX, $iWindowY, $iWindowWidth, $iWindowHeight]
-	Local $aBorder[4] = [$iBorderTop, $iBorderRight, $iBorderBottom, $iBorderLeft]
-	Local $aClient[4] = [$iClientX, $iClientY, $iClientWidth, $iClientHeight]
-	Local $aClientRect[4] = [$iClientRectX, $iClientRectY, $iClientRectWidth, $iClientRectHeight]
-	Local $aFlags = $bWindowFullscreen
-
-	If $bestMonitor = -1 Then Return SetError(3, 0, 0)
-	Local $aReturn[6] = [$aMonitor, $aWindow, $aBorders, $aClient, $aClientRect, $aFlags]
-	Return $aReturn
+	Return False
 EndFunc
 
 Func GetWindowBorders()
@@ -592,19 +625,39 @@ Func ToggleCursorLock()
 		Return
 	EndIf
 
-	Local $aWindowPosition = WindowPosition($hWnd)
-	If @error Or Not IsArray($aWindowPosition) Then
+	; =====
+
+	; Get window position
+	Local $aWindow = WindowPosition($hWnd)
+	If @error Or Not IsArray($aWindow) Then
 		DisplayMessage("Failed to detect window position")
 		Sleep(5)
 		$bHotkeyLock = False
 		Return
 	EndIf
 
-	; Adjust for borders to confine inside the client area
-	Local $aWindow = $aWindowPosition[1] ; Get window position
-	; Local $aBorders = $aWindowPosition[2] ; Get window borders
-	Local $aClientRect = $aWindowPosition[4] ; Get client rect
-	Local $bFullscreen = $aWindowPosition[5] ; Check if fullscreen
+	; Get monitor containing the window
+	Local $aMonitor = WindowMonitor($hWnd)
+	If @error Or Not IsArray($aMonitor) Then
+		DisplayMessage("Failed to detect window monitor")
+		Sleep(5)
+		$bHotkeyLock = False
+		Return
+	EndIf
+
+	; Get actual client rectangle
+	Local $aClientRect = WindowClientRect($hWnd)
+	If @error Or Not IsArray($aClientRect) Then
+		DisplayMessage("Failed to detect window client area")
+		Sleep(5)
+		$bHotkeyLock = False
+		Return
+	EndIf
+
+	; Determine fullscreen state
+	Local $bFullscreen = IsWindowFullscreen($aWindow, $aMonitor, $aClientRect)
+
+	; =====
 
 	Local $iTop = 0, $iRight = 0, $iBottom = 0, $iLeft = 0
 	; Local $iBorder = $aBorders[0] + $aBorders[1]
@@ -756,8 +809,26 @@ EndFunc
 Global Const $GDIP_TEXTRENDERINGHINT_ANTIALIASGRIDFIT = 3 ; Specifies that a character is drawn using its antialiased glyph bitmap and hinting
 
 Global $hGDIP = 0
-Global $hGUI = 0, $hGraphic = 0
-Global $iMessagePadding = 10
+Global $hGUI = 0
+
+; ==
+
+; Reusable GDI+
+Global $g_hBrush = 0
+Global $g_hFormat = 0
+
+Global $g_hFontFamily = 0
+Global $g_hFont = 0
+
+Global $g_sFontName = ""
+Global $g_iFontSize = 0
+
+; ==
+
+Global $g_hGraphic = 0
+
+Global $g_iMessagePadding = 10
+Global $g_iMessageOpacity = -1
 Global $iMessageTimer
 Global $iMessageDuration = 0
 
@@ -772,13 +843,56 @@ Global $iClearMessageID = 0
 
 Global $aCallbacksToFree[0]
 
+Func UpdateMessageFont($sFontName, $iFontSize)
+
+	; Nothing changed
+	If $g_hFont <> 0 And _
+		$g_sFontName = $sFontName And _
+		$g_iFontSize = $iFontSize Then
+
+		Return True
+	EndIf
+
+	; Font object depends on both family and size
+	If $g_hFont <> 0 Then
+		_GDIPlus_FontDispose($g_hFont)
+		$g_hFont = 0
+	EndIf
+
+	; Family only depends on font name
+	If $g_hFontFamily <> 0 And $g_sFontName <> $sFontName Then
+		_GDIPlus_FontFamilyDispose($g_hFontFamily)
+		$g_hFontFamily = 0
+	EndIf
+
+	; Create family if necessary
+	If $g_hFontFamily = 0 Then
+		$g_hFontFamily = _GDIPlus_FontFamilyCreate($sFontName)
+		If @error Or $g_hFontFamily = 0 Then _
+			Return SetError(1, 0, False)
+	EndIf
+
+	; Create font
+	$g_hFont = _GDIPlus_FontCreate($g_hFontFamily, $iFontSize, 0)
+	If @error Or $g_hFont = 0 Then _
+		Return SetError(2, 0, False)
+
+	; Cache identity
+	$g_sFontName = $sFontName
+	$g_iFontSize = $iFontSize
+
+	Return True
+EndFunc
+
 Func DisplayMessage($sText, $iDuration = $configDuration, $sFontName = $configFont, $iFontSize = $configFontSize, $iOpacity = $configOpacity)
 	; Update the global message parameters
 	Local $aMessage[5] = [$sText, $iDuration, $sFontName, $iFontSize, $iOpacity]
 	$g_aCurrentMessage = $aMessage
 
-	; If an update is already in progress, just mark that a new update is pending
-	If $bMessageLock Then
+	; =====
+
+	; If an update is already in progress, defer the new message
+	If $bMessageLock Or $bCallbackLock Then
 		$bMessagePending = True
 		Return
 	EndIf
@@ -786,14 +900,11 @@ Func DisplayMessage($sText, $iDuration = $configDuration, $sFontName = $configFo
 	; Otherwise, acquire the lock
 	$bMessageLock = True
 
-	If $bCallbackLock = True Then
-		Do
-			Sleep(10)
-		Until $bCallbackLock = False
-	EndIf
+	; =====
 
 	Local Const $LWA_ALPHA = 0x00000002
 	Local Const $SWP_NOZORDER = 0x0004
+	Local Const $SWP_NOACTIVATE = 0x0010
 
 	ClearMessageTimerStop()
 
@@ -807,41 +918,55 @@ Func DisplayMessage($sText, $iDuration = $configDuration, $sFontName = $configFo
 
 		; Use the local copy for all further processing
 		Local $sLocalText = StringStripWS($aLocalMessage[0], 3)
-		Local $iLocalDuration = $aLocalMessage[1]
-		Local $sLocalFont = $aLocalMessage[2]
-		Local $iLocalFontSize = $aLocalMessage[3]
 		Local $iLocalOpacity = $aLocalMessage[4]
 
-		; Calculate text dimensions
-		Local $aTextSize = _StringInPixelsNoGUI($sLocalText, $sLocalFont, $iLocalFontSize, 0)
+		; Update reusable font resources if necessary
+		If Not UpdateMessageFont($aLocalMessage[2], $aLocalMessage[3]) Then
+			$bMessageLock = False
+			Return SetError(8, @error, 0)
+		EndIf
+
+		; Calculate text dimensions using the reusable font
+		Local $aTextSize = _StringInPixelsNoGUI($sLocalText, $g_hFont)
 		If @error Then
 			; Failed to set text dimensions
 			$bMessageLock = False
 			Return SetError(5, 0, 0)
 		EndIf
 
-		Local $iTextWidth = Ceiling($aTextSize[0]) + 3 + ($iMessagePadding * 2)
-		Local $iTextHeight = Ceiling($aTextSize[1]) + ($iMessagePadding * 2)
+		Local $iTextWidth = Ceiling($aTextSize[0]) + 3 + ($g_iMessagePadding * 2)
+		Local $iTextHeight = Ceiling($aTextSize[1]) + ($g_iMessagePadding * 2)
 
 		; Get active window handle
 		Local $hWnd = WinGetHandle("[ACTIVE]")
 		If @error Then $hWnd = 0
-		Local $aRect[4]
-		Local $aWindowPosition = WindowPosition($hWnd)
-		If @error Or Not IsArray($aWindowPosition) Or Not IsArray($aWindowPosition[1]) Then
-			$aRect = [0, 0, @DesktopWidth, @DesktopHeight] ; Default values
-		Else
-			$aRect = $aWindowPosition[0] ; Assign the array
+
+		; Get monitor containing the active window
+		Local $aRect = WindowMonitor($hWnd)
+
+		If @error Or Not IsArray($aRect) Then
+			Local $aDefaultRect[4] = [0, 0, @DesktopWidth, @DesktopHeight] ; Default values
+			$aRect = $aDefaultRect
 		EndIf
 
 		; Calculate message position centered on detected monitor
 		Local $iMessageX = $aRect[0] + (($aRect[2] - $iTextWidth) / 2)
 		Local $iMessageY = $aRect[1] + (($aRect[3] - $iTextHeight) / 2)
 
+		; Results for setting opacity
+		Local $aOpacityResult
+
 		; Create GUI
 		If $hGUI = 0 Then
-			$hGUI = GUICreate("Browser Cursor Lock", $iTextWidth, $iTextHeight, $iMessageX, $iMessageY, $WS_POPUP, _
-											BitOR($WS_EX_TOPMOST, $WS_EX_LAYERED, $WS_EX_TOOLWINDOW, $WS_EX_NOACTIVATE))
+			$hGUI = GUICreate("Browser Cursor Lock", _
+				$iTextWidth, _
+				$iTextHeight, _
+				$iMessageX, _
+				$iMessageY, _
+				$WS_POPUP, _
+				BitOR($WS_EX_TOPMOST, $WS_EX_LAYERED, $WS_EX_TOOLWINDOW, $WS_EX_NOACTIVATE) _
+			)
+
 			If @error Then
 				; Failed to create the GUI
 				$bMessageLock = False
@@ -849,103 +974,206 @@ Func DisplayMessage($sText, $iDuration = $configDuration, $sFontName = $configFo
 			EndIf
 
 			If @AutoItX64 Then
-				DllCall("user32.dll", "ptr", "SetWindowLongPtr", "hwnd", $hGUI, "int", $GWL_EXSTYLE, "ptr", _
-					BitOR($WS_EX_NOACTIVATE, $WS_EX_TOOLWINDOW, $WS_EX_TRANSPARENT, $WS_EX_LAYERED))
+				DllCall("user32.dll", _
+					"ptr", "SetWindowLongPtr", _
+					"hwnd", $hGUI, _
+					"int", $GWL_EXSTYLE, _
+					"ptr", BitOR($WS_EX_NOACTIVATE, $WS_EX_TOOLWINDOW, $WS_EX_TRANSPARENT, $WS_EX_LAYERED) _
+				)
 			Else
-				DllCall("user32.dll", "long", "SetWindowLong", "hwnd", $hGUI, "int", $GWL_EXSTYLE, "long", _
-					BitOR($WS_EX_NOACTIVATE, $WS_EX_TOOLWINDOW, $WS_EX_TRANSPARENT, $WS_EX_LAYERED))
+				DllCall("user32.dll", _
+					"long", "SetWindowLong", _
+					"hwnd", $hGUI, _
+					"int", $GWL_EXSTYLE, _
+					"long", BitOR($WS_EX_NOACTIVATE, $WS_EX_TOOLWINDOW, $WS_EX_TRANSPARENT, $WS_EX_LAYERED) _
+				)
 			EndIf
+
 			If @error Then
 				; Failed to set window style
 				GUIDelete($hGUI)
 				$hGUI = 0
+				$g_iMessageOpacity = -1
 				$bMessageLock = False
 				Return SetError(7, 0, 0)
 			EndIf
 
 			; Set Opacity
 			If @AutoItX64 Then
-				DllCall("user32.dll", "bool", "SetLayeredWindowAttributes", "ptr", $hGUI, "dword", 0, "byte", $iOpacity, "dword", $LWA_ALPHA)
+				$aOpacityResult = DllCall("user32.dll", _
+					"bool", "SetLayeredWindowAttributes", _
+					"ptr", $hGUI, _
+					"dword", 0, _
+					"byte", $iLocalOpacity, _
+					"dword", $LWA_ALPHA _
+				)
 			Else
-				DllCall("user32.dll", "bool", "SetLayeredWindowAttributes", "hwnd", $hGUI, "dword", 0, "byte", $iOpacity, "dword", $LWA_ALPHA)
+				$aOpacityResult = DllCall("user32.dll", "bool", "SetLayeredWindowAttributes", _
+					"hwnd", $hGUI, _
+					"dword", 0, _
+					"byte", $iLocalOpacity, _
+					"dword", $LWA_ALPHA _
+				)
+			EndIf
+
+			If Not @error And IsArray($aOpacityResult) And $aOpacityResult[0] Then
+				$g_iMessageOpacity = $iLocalOpacity
 			EndIf
 
 			WinSetOnTop($hGUI, "", 1)
 			GUISetState(@SW_SHOWNA, $hGUI)
 		Else
 			; Move existing message window
-			DllCall("user32.dll", "bool", "SetWindowPos", "hwnd", $hGUI, "hwnd", 0, "int", $iMessageX, "int", $iMessageY, _
-					"int", $iTextWidth + 100, "int", $iTextHeight, "uint", $SWP_NOZORDER)
+			DllCall("user32.dll", _
+				"bool", "SetWindowPos", _
+				"hwnd", $hGUI, _
+				"hwnd", 0, _
+				"int", $iMessageX, _
+				"int", $iMessageY, _
+				"int", $iTextWidth + 100, _
+				"int", $iTextHeight, _
+				"uint", BitOR($SWP_NOZORDER, $SWP_NOACTIVATE) _
+			)
 
-			; Set Opacity
-			DllCall("user32.dll", "bool", "SetLayeredWindowAttributes", "hwnd", $hGUI, "dword", 0, "byte", $iLocalOpacity, "dword", $LWA_ALPHA)
+			; Update opacity only if it changed
+			If $g_iMessageOpacity <> $iLocalOpacity Then
+				If @AutoItX64 Then
+					$aOpacityResult = DllCall("user32.dll", _
+						"bool", "SetLayeredWindowAttributes", _
+						"ptr", $hGUI, _
+						"dword", 0, _
+						"byte", $iLocalOpacity, _
+						"dword", $LWA_ALPHA _
+					)
+				Else
+					$aOpacityResult = DllCall("user32.dll", "bool", "SetLayeredWindowAttributes", _
+						"hwnd", $hGUI, _
+						"dword", 0, _
+						"byte", $iLocalOpacity, _
+						"dword", $LWA_ALPHA _
+					)
+				EndIf
+
+				If Not @error And IsArray($aOpacityResult) And $aOpacityResult[0] Then
+					$g_iMessageOpacity = $iLocalOpacity
+				EndIf
+			EndIf
 
 			; Clear the existing drawing
-			If $hGraphic <> 0 Then
-				_GDIPlus_GraphicsClear($hGraphic)
-				_GDIPlus_GraphicsDispose($hGraphic)
+			If $g_hGraphic <> 0 Then
+				_GDIPlus_GraphicsClear($g_hGraphic)
+				_GDIPlus_GraphicsDispose($g_hGraphic)
+				$g_hGraphic = 0
 			EndIf
 
 			_WinAPI_RedrawWindow($hGUI, 0, 0, BitOR($RDW_INVALIDATE, $RDW_UPDATENOW))
 		EndIf
 
-		$hGraphic = _GDIPlus_GraphicsCreateFromHWND($hGUI)
-		_GDIPlus_GraphicsSetTextRenderingHint($hGraphic, $GDIP_TEXTRENDERINGHINT_ANTIALIASGRIDFIT)
+		$g_hGraphic = _GDIPlus_GraphicsCreateFromHWND($hGUI)
+		_GDIPlus_GraphicsSetTextRenderingHint($g_hGraphic, $GDIP_TEXTRENDERINGHINT_ANTIALIASGRIDFIT)
 
-		Local $hBrush = _GDIPlus_BrushCreateSolid(0x7F000000)
-		If @error Then
-			$bMessageLock = False
-			Return SetError(1, 0, 0)
+		; ==========
+
+		If $g_hBrush = 0 Then
+			$g_hBrush = _GDIPlus_BrushCreateSolid(0x7F000000)
+			If @error Then
+				$bMessageLock = False
+				$g_hBrush = 0
+				Return SetError(1, 0, 0)
+			EndIf
 		EndIf
 
-		Local $hFormat = _GDIPlus_StringFormatCreate()
-		If @error Then
-			_GDIPlus_BrushDispose($hBrush)
-			$bMessageLock = False
-			Return SetError(2, 0, 0)
+		If $g_hFormat = 0 Then
+			$g_hFormat = _GDIPlus_StringFormatCreate()
+			If @error Then
+				$g_hFormat = 0
+				$bMessageLock = False
+				Return SetError(2, 0, 0)
+			EndIf
+
+			; =====
+
+			Local $aRet = DllCall("gdiplus.dll", _
+				"int", "GdipSetStringFormatAlign", _
+				"ptr", $g_hFormat, _
+				"int", 0 _
+			)
+
+			If @error Or $aRet[0] <> 0 Then
+				_GDIPlus_StringFormatDispose($g_hFormat)
+				$g_hFormat = 0
+				$bMessageLock = False
+				Return SetError(3, 0, 0)
+			EndIf
+
+			$aRet = DllCall("gdiplus.dll", _
+				"int", "GdipSetStringFormatFlags", _
+				"ptr", $g_hFormat, _
+				"int", 0 _
+			)
+
+			If @error Or $aRet[0] <> 0 Then
+				_GDIPlus_StringFormatDispose($g_hFormat)
+				$g_hFormat = 0
+				$bMessageLock = False
+				Return SetError(4, 0, 0)
+			EndIf
+
+			; =====
+
 		EndIf
 
-		Local $aRet = DllCall("gdiplus.dll", "int", "GdipSetStringFormatAlign", "ptr", $hFormat, "int", 0)
-		If @error Or $aRet[0] <> 0 Then
-			_GDIPlus_BrushDispose($hBrush)
-			_GDIPlus_StringFormatDispose($hFormat)
+		; ==========
+
+		Local $tLayout = _GDIPlus_RectFCreate( _
+			$g_iMessagePadding - 3, _
+			$g_iMessagePadding, _
+			$aTextSize[0] + 100, _
+			$aTextSize[1] _
+		)
+
+		Local $hRegion = _WinAPI_CreateRoundRectRgn( _
+			0, _
+			0, _
+			$iTextWidth, _
+			$iTextHeight, _
+			$g_iMessagePadding * 2, _
+			$g_iMessagePadding * 2 _
+		)
+
+		If Not $hRegion Then
 			$bMessageLock = False
-			Return SetError(3, 0, 0)
+			Return SetError(9, 0, 0)
 		EndIf
-
-		$aRet = DllCall("gdiplus.dll", "int", "GdipSetStringFormatFlags", "ptr", $hFormat, "int", 0)
-		If @error Or $aRet[0] <> 0 Then
-			_GDIPlus_BrushDispose($hBrush)
-			_GDIPlus_StringFormatDispose($hFormat)
-			$bMessageLock = False
-			Return SetError(4, 0, 0)
-		EndIf
-
-		Local $hFamily = _GDIPlus_FontFamilyCreate($sFontName)
-		Local $hFont = _GDIPlus_FontCreate($hFamily, $iFontSize, 0)
-
-		Local $tLayout = _GDIPlus_RectFCreate($iMessagePadding - 3, $iMessagePadding, $aTextSize[0] + 100, $aTextSize[1])
-		Local $hRegion = _WinAPI_CreateRoundRectRgn(0, 0, $iTextWidth, $iTextHeight, $iMessagePadding * 2, $iMessagePadding * 2)
 
 		_WinAPI_RedrawWindow($hGUI, 0, 0, BitOR($RDW_INVALIDATE, $RDW_UPDATENOW))
 
 		; Draw the rounded corners
-		_WinAPI_SetWindowRgn($hGUI, $hRegion)
+		If Not _WinAPI_SetWindowRgn($hGUI, $hRegion) Then
+			; Windows did not take ownership because the call failed
+			_WinAPI_DeleteObject($hRegion)
+
+			$bMessageLock = False
+			Return SetError(10, 0, 0)
+		EndIf
+
+		; Windows owns $hRegion from this point onward
+		; Do not delete or use $hRegion again
 
 		; Draw the updated string
-		_GDIPlus_GraphicsDrawStringEx($hGraphic, $sLocalText, $hFont, $tLayout, $hFormat, $hBrush)
+		_GDIPlus_GraphicsDrawStringEx( _
+			$g_hGraphic, _
+			$sLocalText, _
+			$g_hFont, _
+			$tLayout, _
+			$g_hFormat, _
+			$g_hBrush _
+		)
 
 		_WinAPI_RedrawWindow($hGUI, 0, 0, BitOR($RDW_INVALIDATE, $RDW_UPDATENOW))
 
-		; Cleanup GDI+ objects
-		_GDIPlus_BrushDispose($hBrush)
-		_GDIPlus_StringFormatDispose($hFormat)
-		_GDIPlus_FontDispose($hFont)
-		_GDIPlus_FontFamilyDispose($hFamily)
-		_WinAPI_DeleteObject($hRegion)
-
 		; Restart timer
-		$iMessageDuration = $iLocalDuration
+		$iMessageDuration = $aLocalMessage[1]
 		$iMessageTimer = TimerInit()
 
 		; A short sleep to allow any potential new updates to set the pending flag
@@ -956,6 +1184,18 @@ Func DisplayMessage($sText, $iDuration = $configDuration, $sFontName = $configFo
 
 	; Release the lock
 	$bMessageLock = False
+EndFunc
+
+Func ProcessPendingMessage()
+	If Not $bMessagePending Or $bMessageLock Or $bCallbackLock Then Return
+
+	DisplayMessage( _
+		$g_aCurrentMessage[0], _
+		$g_aCurrentMessage[1], _
+		$g_aCurrentMessage[2], _
+		$g_aCurrentMessage[3], _
+		$g_aCurrentMessage[4] _
+	)
 EndFunc
 
 Func ClearMessageTimerStart()
@@ -1048,43 +1288,52 @@ Func ClearMessage($bFromCallback = False)
 		EndIf
 
 		; Clean up resources
-		If $hGraphic <> 0 Then
-			_GDIPlus_GraphicsDispose($hGraphic)
-			$hGraphic = 0
+		If $g_hGraphic <> 0 Then
+			_GDIPlus_GraphicsDispose($g_hGraphic)
+			$g_hGraphic = 0
 		EndIf
 
 		$hGUI = 0
+		$g_iMessageOpacity = -1
 	EndIf
 EndFunc
 
 ; ========== ========== ========== ========== ==========
 
-Func _StringInPixelsNoGUI($sString, $sFontFamily, $fSize, $iStyle, $iColWidth = 0)
+Func _StringInPixelsNoGUI($sString, $hFont, $iColWidth = 0)
+
 	; Get the desktop DC
 	Local $hDC = _WinAPI_GetDC(0)
+	If Not $hDC Then Return SetError(1, 0, 0)
+
 	; Create a graphics object from the DC
 	Local $hGraphic = _GDIPlus_GraphicsCreateFromHDC($hDC)
+	If @error Or $hGraphic = 0 Then
+		_WinAPI_ReleaseDC(0, $hDC)
+		Return SetError(2, 0, 0)
+	EndIf
 
 	; Set up a measurable character range covering the entire string
 	Local $aRanges[2][2] = [[1]]
 	$aRanges[1][0] = 0
 	$aRanges[1][1] = StringLen($sString)
 
-	; Create a StringFormat object and set it to measure character ranges
+	; Create a StringFormat object for measurement
 	Local $hFormat = _GDIPlus_StringFormatCreate()
-	_GDIPlus_StringFormatSetMeasurableCharacterRanges($hFormat, $aRanges)
+	If @error Or $hFormat = 0 Then
+		_GDIPlus_GraphicsDispose($hGraphic)
+		_WinAPI_ReleaseDC(0, $hDC)
+		Return SetError(3, 0, 0)
+	EndIf
 
-	; Create a font and set the rendering hint
-	Local $hFamily = _GDIPlus_FontFamilyCreate($sFontFamily)
+	_GDIPlus_StringFormatSetMeasurableCharacterRanges($hFormat, $aRanges)
 	If @error Then
-		; Font does not exist
 		_GDIPlus_StringFormatDispose($hFormat)
 		_GDIPlus_GraphicsDispose($hGraphic)
 		_WinAPI_ReleaseDC(0, $hDC)
-		Return SetError(1, 0, 0)
+		Return SetError(4, 0, 0)
 	EndIf
 
-	Local $hFont = _GDIPlus_FontCreate($hFamily, $fSize, $iStyle)
 	_GDIPlus_GraphicsSetTextRenderingHint($hGraphic, $GDIP_TEXTRENDERINGHINT_ANTIALIASGRIDFIT)
 
 	; If no column width is provided, use a large width
@@ -1094,12 +1343,10 @@ Func _StringInPixelsNoGUI($sString, $sFontFamily, $fSize, $iStyle, $iColWidth = 
 	; Measure the character ranges
 	Local $aRegions = _GDIPlus_GraphicsMeasureCharacterRanges($hGraphic, $sString, $hFont, $tLayout, $hFormat)
 	If Not IsArray($aRegions) Then
-		_GDIPlus_FontDispose($hFont)
-		_GDIPlus_FontFamilyDispose($hFamily)
 		_GDIPlus_StringFormatDispose($hFormat)
 		_GDIPlus_GraphicsDispose($hGraphic)
 		_WinAPI_ReleaseDC(0, $hDC)
-		Return
+		Return SetError(5, 0, 0)
 	EndIf
 
 	Local $aBounds = _GDIPlus_RegionGetBounds($aRegions[1], $hGraphic)
@@ -1108,8 +1355,6 @@ Func _StringInPixelsNoGUI($sString, $sFontFamily, $fSize, $iStyle, $iColWidth = 
 	Local $aWidthHeight[2] = [$aBounds[2], $aBounds[3]]
 
 	; Clean up
-	_GDIPlus_FontDispose($hFont)
-	_GDIPlus_FontFamilyDispose($hFamily)
 	_GDIPlus_StringFormatDispose($hFormat)
 	If IsArray($aRegions) Then
 		For $i = 1 To $aRegions[0]
