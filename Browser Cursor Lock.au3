@@ -49,17 +49,20 @@ EndIf
 
 ; ========== ========== ========== ========== ==========
 
-Global $g_hActiveWnd = 0 ; Handle for the active browser window
+Global $g_hActiveHwnd = 0 ; Handle for the active browser window
+Global $g_hLastHwnd = 0 ; Handle for the last detected window
+Global $g_hCursorLockHwnd = 0 ; Handle for the clip cursor calculation
+
+Global $g_sLastWindowTitle = "" ; Last detected window title
+Global $g_bTransientWindow = False
 
 Global $g_bCursorLocked = False
-Global $g_aBrowserWindow[4] = [0, 0, 0, 0] ; Saved rect of the browser window during toggle
+
+Global $g_aBrowserRect[4] = [0, 0, 0, 0] ; Rect of the browser window during toggle
+Global $g_aCursorClipRect[4] = [0, 0, 0, 0] ; Expected cursor clip [Left, Top, Right, Bottom]
 
 Global $browser = -1 ; Index for the currrently detected browser
 Global $game = -1 ; Index for the currently detected game
-
-Global $g_hLastHwnd = 0 ; Last detected window handle
-Global $g_sLastWindowTitle = "" ; Last detected window title
-Global $g_bTransientWindow = False
 
 ; ========== ========== ========== ========== ==========
 
@@ -98,9 +101,7 @@ Func _Main()
 		; ========== ========== ==========
 
 		ProcessWindow()
-		If @AutoItX64 Then
-			ProcessCallbackCleanup()
-		EndIf
+		ProcessCursorLock()
 
 		; ========== ========== ==========
 
@@ -165,6 +166,12 @@ Func ExitScript()
 
 		; Clean up message GUI and resources
 		ClearMessage()
+
+		; Free the reusable timer callback
+		If $hClearMessageCallback <> 0 And $iClearMessageID = 0 Then
+			DllCallbackFree($hClearMessageCallback)
+			$hClearMessageCallback = 0
+		EndIf
 
 		; =====
 
@@ -254,7 +261,7 @@ Func ProcessWindow()
 
 		$browser = -1
 		$game = -1
-		$g_hActiveWnd = 0
+		$g_hActiveHwnd = 0
 
 		$g_hLastHwnd = 0
 		$g_sLastWindowTitle = ""
@@ -303,6 +310,7 @@ Func ProcessWindow()
 		; Check if the window belongs to a known browser
 		For $i = 0 To UBound($g_aBrowsers) - 1
 			Local $browserRegex = StringLower(StringStripWS($g_aBrowsers[$i][2], 3))
+
 			; Use RegEx to match the browser title
 			If StringRegExp(StringLower($titleAfterHyphen), $browserRegex) Then
 				$iBrowserIndex = $i
@@ -314,6 +322,7 @@ Func ProcessWindow()
 		If $iBrowserIndex <> -1 And $titleBeforeHyphen <> "" Then
 			For $i = 0 To UBound($g_aGames) - 1
 				Local $gameRegex = StringLower(StringStripWS($g_aGames[$i][2], 3))
+
 				; Use RegEx to match the game title
 				If StringRegExp(StringLower($titleBeforeHyphen), $gameRegex) Then
 					$iGameIndex = $i
@@ -323,9 +332,12 @@ Func ProcessWindow()
 		EndIf
 	Else
 		If $browser == -1 Then Return
+
 		$iBrowserIndex = $browser
 		$iGameIndex = $game
 	EndIf
+
+	; =====
 
 	Local $sMessageText = ""
 
@@ -340,6 +352,7 @@ Func ProcessWindow()
 				If $currentHotkey = "" Then
 					; Attempt to set new hotkey
 					Local $result = HotKeySet($configHotkey, "ToggleCursorLock")
+
 					If $result = 0 Then
 						MsgBox(16, "HotKey Error", "Configured hotkey '" & $configHotkey & "' could not be set.")
 					Else
@@ -353,12 +366,13 @@ Func ProcessWindow()
 		If $iGameIndex <> -1 Then
 			If $game < 0 Or $game <> $iGameIndex Then
 				$game = $iGameIndex
-				$g_hActiveWnd = $currentHwnd
+				$g_hActiveHwnd = $currentHwnd
 
 				; If there's an existing hotkey, remove it before setting a new one
 				If $currentHotkey = "" Then
 					; Attempt to set new hotkey
 					Local $result = HotKeySet($configHotkey, "ToggleCursorLock")
+
 					If $result = 0 Then
 						MsgBox(16, "HotKey Error", "Configured hotkey '" & $configHotkey & "' could not be set.")
 					Else
@@ -372,8 +386,8 @@ Func ProcessWindow()
 			EndIf
 
 			; Only update if switching to a new game instance (different window handle)
-			If $g_hActiveWnd <> $currentHwnd Then
-				$g_hActiveWnd = $currentHwnd
+			If $g_hActiveHwnd <> $currentHwnd Then
+				$g_hActiveHwnd = $currentHwnd
 
 				If $configGameMessages Then
 					If $sMessageText <> "" Then
@@ -382,36 +396,11 @@ Func ProcessWindow()
 						$sMessageText = "Game detected: " & $g_aGames[$iGameIndex][1]
 					EndIf
 				EndIf
-			Else
-
-				; If cursor is locked, check if the window has moved or resized
-				If $g_bCursorLocked Then
-
-					; Get the latest window position
-					Local $aWinPos = WindowPosition($g_hActiveWnd)
-
-					; Proceed if we sucessfully captured the window's position
-					If Not @error And IsArray($aWinPos) Then
-
-						; Compare against stored window position
-						If $aWinPos[0] <> $g_aBrowserWindow[0] Or _
-						$aWinPos[1] <> $g_aBrowserWindow[1] Or _
-						$aWinPos[2] <> $g_aBrowserWindow[2] Or _
-						$aWinPos[3] <> $g_aBrowserWindow[3] Then
-							$sMessageText = "Cursor Released"
-							ResetCursorLock()
-						EndIf
-					Else
-						; Window position is unavailable because the window was closed or minimized
-						$sMessageText = "Cursor Released"
-						ResetCursorLock()
-					EndIf
-				EndIf
 			EndIf
 		Else
 			If $game >= 0 Then
 				$game = -1
-				$g_hActiveWnd = 0
+				$g_hActiveHwnd = 0
 
 				If $currentHotkey <> "" And Not $configLockCursorAllTitles Then
 					HotKeySet($currentHotkey)
@@ -424,6 +413,7 @@ Func ProcessWindow()
 
 				If $g_bCursorLocked Then
 					ResetCursorLock()
+
 					If $configGameMessages Then
 						$sMessageText &= " and cursor unlocked"
 					EndIf
@@ -434,7 +424,7 @@ Func ProcessWindow()
 		If $browser <> -1 Then
 			$browser = -1
 			$game = -1
-			$g_hActiveWnd = 0
+			$g_hActiveHwnd = 0
 
 			If $currentHotkey <> "" Then
 				HotKeySet($currentHotkey)
@@ -447,6 +437,7 @@ Func ProcessWindow()
 
 			If $g_bCursorLocked Then
 				ResetCursorLock()
+
 				If $configGameMessages Then
 					$sMessageText &= " and cursor unlocked"
 				EndIf
@@ -631,7 +622,7 @@ Func ToggleCursorLock()
 
 	; Ensure a valid game window is detected
 	If Not $configLockCursorAllTitles Then
-		If Not $g_hActiveWnd Or Not WinExists($g_hActiveWnd) Then
+		If Not $g_hActiveHwnd Or Not WinExists($g_hActiveHwnd) Then
 			DisplayMessage("No active game window detected")
 			Sleep(5)
 			$bHotkeyLock = False
@@ -650,8 +641,8 @@ Func ToggleCursorLock()
 
 	; Retrieve window position and monitor coverage
 	Local $hWnd = 0
-	If $g_hActiveWnd <> 0 Then
-		$hWnd = $g_hActiveWnd
+	If $g_hActiveHwnd <> 0 Then
+		$hWnd = $g_hActiveHwnd
 	ElseIf $g_hLastHwnd <> 0 Then
 		$hWnd = $g_hLastHwnd
 	EndIf
@@ -813,25 +804,156 @@ Func ToggleCursorLock()
 		Return
 	EndIf
 
+	; =====
+
+	; Store the window this cursor lock belongs to
+	$g_hCursorLockHwnd = $hWnd
+
+	; Store the exact clipping rectangle
+	$g_aCursorClipRect[0] = $iLeft
+	$g_aCursorClipRect[1] = $iTop
+	$g_aCursorClipRect[2] = $iRight
+	$g_aCursorClipRect[3] = $iBottom
+
 	; Only mark as locked after ClipCursor succeeds
 	$g_bCursorLocked = True
 
 	; Store the active window's position for tracking
 	For $i = 0 To 3
-		$g_aBrowserWindow[$i] = $aWindow[$i]
+		$g_aBrowserRect[$i] = $aWindow[$i]
 	Next
+
+	; =====
 
 	Sleep(5)
 	$bHotkeyLock = False
 EndFunc
 
-Func ResetCursorLock()
+Func ProcessCursorLock()
+	; Nothing to monitor
 	If Not $g_bCursorLocked Then Return
-	_WinAPI_ClipCursor(0)
+
+	Local $tCurrentClip
+
+	; =====
+
+	; Make sure the lock's owner still exists
+	If $g_hCursorLockHwnd = 0 Or Not WinExists($g_hCursorLockHwnd) Then
+		$tCurrentClip = _WinAPI_GetClipCursor()
+		If @error Then Return
+
+		If DllStructGetData($tCurrentClip, "Left") = $g_aCursorClipRect[0] And _
+			DllStructGetData($tCurrentClip, "Top") = $g_aCursorClipRect[1] And _
+			DllStructGetData($tCurrentClip, "Right") = $g_aCursorClipRect[2] And _
+			DllStructGetData($tCurrentClip, "Bottom") = $g_aCursorClipRect[3] Then
+
+			; Windows is still enforcing our expected rectangle
+			ResetCursorLock()
+		Else
+			; The system clip has already changed, so don't disturb it
+			ResetCursorLock(False)
+		EndIf
+
+		Return
+	EndIf
+
+	; =====
+
+	; Make sure the lock's owner is still the active window
+	Local $hCurrentWnd = WinGetHandle("[ACTIVE]")
+	If @error Or $hCurrentWnd = 0 Then Return
+
+	If $hCurrentWnd <> $g_hCursorLockHwnd Then
+		$tCurrentClip = _WinAPI_GetClipCursor()
+		If @error Then Return
+
+		If DllStructGetData($tCurrentClip, "Left") = $g_aCursorClipRect[0] And _
+			DllStructGetData($tCurrentClip, "Top") = $g_aCursorClipRect[1] And _
+			DllStructGetData($tCurrentClip, "Right") = $g_aCursorClipRect[2] And _
+			DllStructGetData($tCurrentClip, "Bottom") = $g_aCursorClipRect[3] Then
+
+			; Our clip is still active, so release it
+			ResetCursorLock()
+		Else
+			; Something else already changed the system clip
+			ResetCursorLock(False)
+		EndIf
+
+		DisplayMessage("Cursor Released")
+		Return
+	EndIf
+
+	; =====
+
+	; Check whether the locked window has moved or resized
+	Local $aWinPos = WindowPosition($g_hCursorLockHwnd)
+
+	If @error Or Not IsArray($aWinPos) Then
+		ResetCursorLock()
+		DisplayMessage("Cursor Released")
+		Return
+	EndIf
+
+	If $aWinPos[0] <> $g_aBrowserRect[0] Or _
+		$aWinPos[1] <> $g_aBrowserRect[1] Or _
+		$aWinPos[2] <> $g_aBrowserRect[2] Or _
+		$aWinPos[3] <> $g_aBrowserRect[3] Then
+
+		ResetCursorLock()
+		DisplayMessage("Cursor Released")
+		Return
+	EndIf
+
+	; =====
+
+	; Get the clipping rectangle Windows is currently enforcing
+	$tCurrentClip = _WinAPI_GetClipCursor()
+	If @error Then Return
+
+	; Nothing changed
+	If DllStructGetData($tCurrentClip, "Left") = $g_aCursorClipRect[0] And _
+		DllStructGetData($tCurrentClip, "Top") = $g_aCursorClipRect[1] And _
+		DllStructGetData($tCurrentClip, "Right") = $g_aCursorClipRect[2] And _
+		DllStructGetData($tCurrentClip, "Bottom") = $g_aCursorClipRect[3] Then
+
+		Return
+	EndIf
+
+	; =====
+
+	; The system clip changed underneath us
+	; Recreate and restore our expected rectangle
+	Local $tExpectedClip = _WinAPI_CreateRect( _
+		$g_aCursorClipRect[0], _
+		$g_aCursorClipRect[1], _
+		$g_aCursorClipRect[2], _
+		$g_aCursorClipRect[3] _
+	)
+
+	If @error Then Return
+
+	If Not _WinAPI_ClipCursor($tExpectedClip) Then
+		; Our expected clip is no longer active and restoration failed
+		; Clear our state without releasing somebody else's clip
+		ResetCursorLock(False)
+	EndIf
+EndFunc
+
+Func ResetCursorLock($bReleaseCursor = True)
+	If Not $g_bCursorLocked Then Return
+
+	If $bReleaseCursor Then
+		_WinAPI_ClipCursor(0)
+	EndIf
+
 	$g_bCursorLocked = False
+	$g_hCursorLockHwnd = 0
+
 	For $i = 0 To 3
-		$g_aBrowserWindow[$i] = 0
+		$g_aBrowserRect[$i] = 0
+		$g_aCursorClipRect[$i] = 0
 	Next
+
 	$bHotkeyLock = False
 EndFunc
 
@@ -877,8 +999,6 @@ Global $hClearMessageCallback = 0
 Global $bCallbackLock = False
 
 Global $iClearMessageID = 0
-
-Global $aCallbacksToFree[0]
 
 Func UpdateMessageFont($sFontName, $iFontSize)
 
@@ -1236,81 +1356,118 @@ Func ProcessPendingMessage()
 EndFunc
 
 Func ClearMessageTimerStart()
-	If @AutoItX64 Then
-		; 64-bit: third param must be "ptr" or "uint_ptr"
-		$hClearMessageCallback = DllCallbackRegister("ClearMessageTimer", "int", "hwnd;uint;ptr;dword")
-		$iClearMessageID = DllCall("user32.dll", "ptr", "SetTimer", "ptr", 0, "ptr", 0, "int", 50, "ptr", DllCallbackGetPtr($hClearMessageCallback))
-	Else
-		; 32-bit: third param is just "uint"
-		$hClearMessageCallback = DllCallbackRegister("ClearMessageTimer", "int", "hwnd;uint;uint;dword")
-		$iClearMessageID = DllCall("user32.dll", "int", "SetTimer", "hwnd", 0, "int", 0, "int", 50, "ptr", DllCallbackGetPtr($hClearMessageCallback))
+	; Create the callback once and reuse it
+	If $hClearMessageCallback = 0 Then
+		If @AutoItX64 Then
+			; 64-bit: third param must be "ptr" or "uint_ptr"
+			$hClearMessageCallback = DllCallbackRegister( _
+				"ClearMessageTimer", _
+				"none", _
+				"hwnd;uint;ptr;dword" _
+			)
+		Else
+			; 32-bit: third param is just "uint"
+			$hClearMessageCallback = DllCallbackRegister( _
+				"ClearMessageTimer", _
+				"none", _
+				"hwnd;uint;uint;dword" _
+			)
+		EndIf
+
+		If @error Or $hClearMessageCallback = 0 Then
+			MsgBox(16, "Timer Error", "Failed to create the ClearMessage callback.")
+			Return SetError(1, 0, False)
+		EndIf
 	EndIf
 
-	If @error Or Not IsArray($iClearMessageID) Then
-		MsgBox(16, "Timer Error", "Failed to set the ClearMessage timer.")
-		$iClearMessageID = 0
-		DllCallbackFree($hClearMessageCallback)
-		$hClearMessageCallback = 0
+	; Get the reusable callback's function pointer
+	Local $pCallback = DllCallbackGetPtr($hClearMessageCallback)
+
+	If @error Or $pCallback = 0 Then
+		MsgBox(16, "Timer Error", "Failed to get the ClearMessage callback pointer.")
+		Return SetError(2, 0, False)
 	EndIf
+
+	; =====
+
+	; Start a temporary Windows timer
+	Local $aTimer
+
+	If @AutoItX64 Then
+		$aTimer = DllCall("user32.dll", _
+			"ptr", "SetTimer", _
+			"ptr", 0, _
+			"ptr", 0, _
+			"uint", 50, _
+			"ptr", $pCallback _
+		)
+	Else
+		$aTimer = DllCall("user32.dll", _
+			"uint", "SetTimer", _
+			"hwnd", 0, _
+			"uint", 0, _
+			"uint", 50, _
+			"ptr", $pCallback _
+		)
+	EndIf
+
+	If @error Or Not IsArray($aTimer) Or $aTimer[0] = 0 Then
+		MsgBox(16, "Timer Error", "Failed to set the ClearMessage timer.")
+		Return SetError(3, 0, False)
+	EndIf
+
+	; Store the timer ID returned by Windows
+	$iClearMessageID = $aTimer[0]
+
+	Return True
 EndFunc
 
 Func ClearMessageTimerStop()
-	; If the timer is running, kill it
-	If IsArray($iClearMessageID) And $iClearMessageID[0] <> 0 Then
-		Local $ret
-		If @AutoItX64 Then
-			; In 64-bit mode, use "ptr" for the timer ID
-			$ret = DllCall("user32.dll", "ptr", "KillTimer", "ptr", 0, "ptr", $iClearMessageID[0])
-		Else
-			; In 32-bit mode, use "int" for the timer ID
-			$ret = DllCall("user32.dll", "int", "KillTimer", "hwnd", 0, "int", $iClearMessageID[0])
-		EndIf
+	; Nothing is running
+	If $iClearMessageID = 0 Then Return True
+
+	Local $aResult
+
+	If @AutoItX64 Then
+		$aResult = DllCall("user32.dll", _
+			"bool", "KillTimer", _
+			"ptr", 0, _
+			"ptr", $iClearMessageID _
+		)
+	Else
+		$aResult = DllCall("user32.dll", _
+			"bool", "KillTimer", _
+			"hwnd", 0, _
+			"uint", $iClearMessageID _
+		)
 	EndIf
 
-	Local $maxWait = 500, $waitTime = 0
-	While $bCallbackLock And $waitTime < $maxWait
-		Sleep(10)
-		$waitTime += 10
-	WEnd
-
-	; And free the callback
-	If $hClearMessageCallback <> 0 Then
-		If @AutoItX64 Then
-			_ArrayAdd($aCallbacksToFree, $hClearMessageCallback)
-		Else
-			DllCallbackFree($hClearMessageCallback)
-		EndIf
-		$hClearMessageCallback = 0
-	EndIf
+	; Keep the ID if Windows failed to stop the timer
+	If @error Or Not IsArray($aResult) Or Not $aResult[0] Then _
+		Return False
 
 	$iClearMessageID = 0
-EndFunc
 
-Func ProcessCallbackCleanup()
-	If $bCallbackLock Then Return
-	$bCallbackLock = True
-
-	; Go through the array and free callbacks that are safe to free
-	For $i = UBound($aCallbacksToFree) - 1 To 0 Step -1
-		DllCallbackFree($aCallbacksToFree[$i])
-		_ArrayDelete($aCallbacksToFree, $i)
-	Next
-
-	$bCallbackLock = False
+	Return True
 EndFunc
 
 Func ClearMessageTimer($hWnd, $uMsg, $idEvent, $dwTime)
-	If $hGUI <> 0 And $bMessageLock = False Then
+	If $hGUI <> 0 And Not $bMessageLock Then
 		$bCallbackLock = True
-		Local $elapsed = TimerDiff($iMessageTimer)
-		If $elapsed >= $iMessageDuration Then ClearMessage(True)
+
+		If IsNumber($iMessageTimer) And _
+			$iMessageDuration > 0 And _
+			TimerDiff($iMessageTimer) >= $iMessageDuration Then
+
+			ClearMessage()
+		EndIf
+
 		$bCallbackLock = False
 	EndIf
-	Return 0
 EndFunc
 
-Func ClearMessage($bFromCallback = False)
-	If Not $bFromCallback Then ClearMessageTimerStop()
+Func ClearMessage()
+	ClearMessageTimerStop()
 
 	If $hGUI <> 0 Then
 		; Clear timer
