@@ -149,7 +149,11 @@ Func _Main()
 
 		; ========== ========== ==========
 
-		Sleep(25)
+		If $g_bCursorLocked Then
+			Sleep(25)
+		Else
+			Sleep(50)
+		EndIf
 
 	WEnd
 EndFunc
@@ -165,7 +169,7 @@ Func ExitScript()
 		If $g_bCursorLocked Then ResetCursorLock()
 
 		; Clean up message GUI and resources
-		ClearMessage()
+		ClearMessage(True)
 
 		; Free the reusable timer callback
 		If $hClearMessageCallback <> 0 And $iClearMessageID = 0 Then
@@ -1466,8 +1470,16 @@ Func ClearMessageTimer($hWnd, $uMsg, $idEvent, $dwTime)
 	EndIf
 EndFunc
 
-Func ClearMessage()
+Func ClearMessage($bForce = False)
 	ClearMessageTimerStop()
+
+	; Preserve the existing GUI only when another notification
+	; is genuinely waiting to use it
+	If $bMessagePending And Not $bForce Then
+		$iMessageTimer = Null
+		$iMessageDuration = 0
+		Return
+	EndIf
 
 	If $hGUI <> 0 Then
 		; Clear timer
@@ -1666,7 +1678,7 @@ Global $hConfigGUI = 0
 
 ;--- Configuration Window Code ---
 Func ShowConfigWindow()
-	ClearMessage()
+	ClearMessage(True)
 	TraySetClick(0)
 
 	$tmpBrowsers = $g_aBrowsers
@@ -2101,6 +2113,7 @@ Func ShowConfigWindow()
 					GUICtrlSetState($hRemoveGame, $GUI_HIDE)
 				EndIf
 		EndSwitch
+		Sleep(10)
 	WEnd
 EndFunc
 
