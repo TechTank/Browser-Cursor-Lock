@@ -2666,10 +2666,11 @@ Func _GetConfig()
 	Local $defaultGamesData = _
 		[ _
 			["agar", "Agar.io", "(?i)agar.io", "0,0,90,0", "0,0,90,0"], _
-			["paper2", "Paper 2", "(?i)paper", "0,0,0,0", "0,0,0,0"], _
+			["diep", "Diep", "(?i)diep.io", "0,0,0,0", "0,0,0,0"], _
 			["digdig", "Digdig", "(?i)digdig.io", "0,0,0,0", "0,0,0,0"], _
-			["wormate", "Wormate", "(?i)wormate.io", "0,0,0,0", "0,0,0,0"], _
-			["snake", "Snake", "(?i)snake.io", "0,0,0,0", "0,0,0,0"] _
+			["paper2", "Paper 2", "(?i)paper", "0,0,0,0", "0,0,0,0"], _
+			["snake", "Snake", "(?i)snake.io", "0,0,0,0", "0,0,0,0"], _
+			["wormate", "Wormate", "(?i)wormate.io", "0,0,0,0", "0,0,0,0"] _
 		]
 
 	; Read game IDs from the INI file
