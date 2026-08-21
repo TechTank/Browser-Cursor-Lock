@@ -660,31 +660,37 @@ Func ToggleCursorLock()
 
 	; =====
 
+	LockCursor($hWnd)
+
+	Sleep(5)
+	$bHotkeyLock = False
+EndFunc
+
+Func LockCursor($hWnd, $bAuto = False)
+	If Not $hWnd Or Not WinExists($hWnd) Then
+		DisplayMessage("Selected window not found")
+		Return SetError(1, 0, False)
+	EndIf
+
 	; Get window position
 	Local $aWindow = WindowPosition($hWnd)
 	If @error Or Not IsArray($aWindow) Then
 		DisplayMessage("Failed to detect window position")
-		Sleep(5)
-		$bHotkeyLock = False
-		Return
+		Return SetError(2, 0, False)
 	EndIf
 
 	; Get monitor containing the window
 	Local $aMonitor = WindowMonitor($hWnd)
 	If @error Or Not IsArray($aMonitor) Then
 		DisplayMessage("Failed to detect window monitor")
-		Sleep(5)
-		$bHotkeyLock = False
-		Return
+		Return SetError(3, 0, False)
 	EndIf
 
 	; Get actual client rectangle
 	Local $aClientRect = WindowClientRect($hWnd)
 	If @error Or Not IsArray($aClientRect) Then
 		DisplayMessage("Failed to detect window client area")
-		Sleep(5)
-		$bHotkeyLock = False
-		Return
+		Return SetError(4, 0, False)
 	EndIf
 
 	; Determine fullscreen state
@@ -698,9 +704,7 @@ Func ToggleCursorLock()
 	If $bFullscreen Then
 		If Not $configLockCursorFullscreen Then
 			DisplayMessage("Fullscreen cursor lock is disabled")
-			Sleep(5)
-			$bHotkeyLock = False
-			Return
+			Return SetError(5, 0, False)
 		EndIf
 
 		Local $aFullBrowserOffsets = StringSplit($g_aBrowsers[$browser][4], ",", 2)
@@ -742,16 +746,15 @@ Func ToggleCursorLock()
 	Else
 		If Not $configLockCursorWindowed Then
 			DisplayMessage("Windowed cursor lock is disabled")
-			Sleep(5)
-			$bHotkeyLock = False
-			Return
+			Return SetError(6, 0, False)
 		EndIf
 
 		Local $aWindowBrowserOffsets = StringSplit($g_aBrowsers[$browser][3], ",", 2)
 		If UBound($aWindowBrowserOffsets) <> 4 Then Local $aWindowBrowserOffsets = [0, 0, 0, 0]
 
+		Local $aWindowGameOffsets
 		If $game <> -1 Then
-			Local $aWindowGameOffsets = StringSplit($g_aGames[$game][3], ",", 2)
+			$aWindowGameOffsets = StringSplit($g_aGames[$game][3], ",", 2)
 			If UBound($aWindowGameOffsets) <> 4 Then Local $aWindowGameOffsets = [0, 0, 0, 0]
 		Else
 			$aWindowGameOffsets = False
@@ -763,14 +766,14 @@ Func ToggleCursorLock()
 		$iLeft = $aClientRect[0]
 
 		If IsArray($aWindowBrowserOffsets) And UBound($aWindowBrowserOffsets) = 4 Then
-			$iTop +=Number($aWindowBrowserOffsets[0])
+			$iTop += Number($aWindowBrowserOffsets[0])
 			$iRight -= Number($aWindowBrowserOffsets[1])
 			$iBottom -= Number($aWindowBrowserOffsets[2])
 			$iLeft += Number($aWindowBrowserOffsets[3])
 		EndIf
 
 		If IsArray($aWindowGameOffsets) And UBound($aWindowGameOffsets) = 4 Then
-			$iTop +=Number($aWindowGameOffsets[0])
+			$iTop += Number($aWindowGameOffsets[0])
 			$iRight -= Number($aWindowGameOffsets[1])
 			$iBottom -= Number($aWindowGameOffsets[2])
 			$iLeft += Number($aWindowGameOffsets[3])
@@ -786,16 +789,14 @@ Func ToggleCursorLock()
 	; Protect against bad offsets
 	If $iRight <= $iLeft Or $iBottom <= $iTop Then
 		DisplayMessage("Invalid cursor lock rectangle")
-		$bHotkeyLock = False
-		Return
+		Return SetError(7, 0, False)
 	EndIf
 
 	; Create the clipping rectangle
 	Local $tRect = _WinAPI_CreateRect($iLeft, $iTop, $iRight, $iBottom)
 	If @error Then
 		DisplayMessage("Failed to create rectangle structure")
-		$bHotkeyLock = False
-		Return
+		Return SetError(8, 0, False)
 	EndIf
 
 	; Apply cursor restriction
@@ -804,8 +805,7 @@ Func ToggleCursorLock()
 	If @error Or Not IsArray($aResult) Or Not $aResult[0] Then
 		DisplayMessage("Failed to clip cursor")
 		$g_bCursorLocked = False
-		$bHotkeyLock = False
-		Return
+		Return SetError(9, 0, False)
 	EndIf
 
 	; =====
@@ -827,10 +827,7 @@ Func ToggleCursorLock()
 		$g_aBrowserRect[$i] = $aWindow[$i]
 	Next
 
-	; =====
-
-	Sleep(5)
-	$bHotkeyLock = False
+	Return True
 EndFunc
 
 Func ProcessCursorLock()
