@@ -1001,8 +1001,11 @@ Func LockCursorWithGeometry($hWnd, ByRef $aWindow, ByRef $aMonitor, ByRef $aClie
 		EndIf
 	EndIf
 
-	; Protect against bad offsets
-	If $iRight <= $iLeft Or $iBottom <= $iTop Then
+	; Protect against bad offsets and values that cannot fit a Win32 RECT LONG
+	If $iRight <= $iLeft Or $iBottom <= $iTop Or _
+		Not _IsInt32Value($iTop) Or Not _IsInt32Value($iRight) Or _
+		Not _IsInt32Value($iBottom) Or Not _IsInt32Value($iLeft) Then
+
 		DisplayMessage("Invalid cursor lock rectangle")
 		Return SetError(5, 0, False)
 	EndIf
@@ -1214,9 +1217,14 @@ Func ReleaseCursorLockIfOwned()
 		DllStructGetData($tCurrentClip, "Bottom") = $g_aCursorClipRect[3]
 
 	; If another component already replaced our clip, clear only our bookkeeping
-	; Either way, the old Browser Cursor Lock state is finished successfully
-	ResetCursorLock($bOwned)
-	Return True
+	If Not $bOwned Then
+		ResetCursorLock(False)
+		Return True
+	EndIf
+
+	; We still own the exact system clip. Only clear bookkeeping if Windows
+	; actually accepts the release; otherwise keep state intact for a retry.
+	Return ResetCursorLock(True)
 EndFunc
 
 Func ResetCursorLock($bReleaseCursor = True)
@@ -1392,7 +1400,7 @@ Func DisplayMessage($sText, $iDuration = $configDuration, $sFontName = $configFo
 		Local $iMessageX = $aRect[0] + (($aRect[2] - $iTextWidth) / 2)
 		Local $iMessageY = $aRect[1] + (($aRect[3] - $iTextHeight) / 2)
 
-		; Results for setting opacity
+		; Results for window settings
 		Local $aResult
 
 		; Create GUI
@@ -1428,7 +1436,7 @@ Func DisplayMessage($sText, $iDuration = $configDuration, $sFontName = $configFo
 			EndIf
 
 			If @error Or Not IsArray($aResult) Then
-				; Failed to set the window style
+				; Failed to call the window-style API
 				Return _DisplayMessageFail(7)
 			EndIf
 
@@ -2774,6 +2782,36 @@ Func _UpdateGameFields($index, $hGameID, $hGameDisplay, $hGameTitle, _
 	EndIf
 EndFunc
 
+Func _IsInt32Value($vValue)
+	If Not IsNumber($vValue) Then Return False
+	Return $vValue >= -2147483648 And $vValue <= 2147483647
+EndFunc
+
+Func _IsSignedInt32String($sValue)
+	$sValue = StringStripWS($sValue, 3)
+	If Not StringRegExp($sValue, "^-?\d+$") Then Return False
+
+	Local $nValue = Number($sValue)
+	Return _IsInt32Value($nValue)
+EndFunc
+
+Func _NormalizeOffsetString($sOffsets, $sDefault = "0,0,0,0")
+	$sOffsets = StringStripWS($sOffsets, 3)
+	$sOffsets = StringRegExpReplace($sOffsets, "[, ]+$", "")
+	Local $aOffsets = StringSplit($sOffsets, ",", 2)
+	If UBound($aOffsets) <> 4 Then Return $sDefault
+
+	Local $sNormalized = ""
+	For $i = 0 To 3
+		Local $sValue = StringStripWS($aOffsets[$i], 3)
+		If Not _IsSignedInt32String($sValue) Then Return $sDefault
+		If $i > 0 Then $sNormalized &= ","
+		$sNormalized &= $sValue
+	Next
+
+	Return $sNormalized
+EndFunc
+
 Func _ReadOffsetSet($hTop, $hRight, $hBottom, $hLeft, $sDescription)
 	Local $aControls[4] = [$hTop, $hRight, $hBottom, $hLeft]
 	Local $aDirections[4] = ["Top", "Right", "Bottom", "Left"]
@@ -2782,8 +2820,8 @@ Func _ReadOffsetSet($hTop, $hRight, $hBottom, $hLeft, $sDescription)
 	For $i = 0 To 3
 		Local $sValue = StringStripWS(GUICtrlRead($aControls[$i]), 3)
 
-		If Not StringRegExp($sValue, "^-?\d+$") Then
-			MsgBox(16, "Invalid Offset", $sDescription & " " & $aDirections[$i] & " offset must be a whole number.")
+		If Not _IsSignedInt32String($sValue) Then
+			MsgBox(16, "Invalid Offset", $sDescription & " " & $aDirections[$i] & " offset must be a whole number between -2147483648 and 2147483647.")
 			Return SetError(1, 0, "")
 		EndIf
 
@@ -3402,8 +3440,8 @@ Func _GetConfig()
 		]
 
 	; Read browser IDs from the INI file
-	; A reserved | value means the user intentionally configured 
-	; an empty list; a missing/blank value still uses defaults
+	; A reserved | value means the user intentionally configured an empty list;
+	; a missing/blank or wholly malformed non-sentinel value uses defaults
 	Local $sBrowsers = IniRead($configPath, "browsers", "ids", $defaultBrowsers)
 	Local $aBrowserIDs
 
@@ -3412,10 +3450,15 @@ Func _GetConfig()
 		$aBrowserIDs = $aEmptyBrowserIDs
 	Else
 		If StringStripWS($sBrowsers, 3) = "" Then $sBrowsers = $defaultBrowsers
-		
+
 		; Convert to an array and remove blank, malformed, or duplicate IDs
 		Local $aRawBrowserIDs = StringSplit($sBrowsers, ",", 2)
 		$aBrowserIDs = _CompactConfigIDs($aRawBrowserIDs)
+
+		If UBound($aBrowserIDs) = 0 Then
+			Local $aDefaultBrowserIDs = StringSplit($defaultBrowsers, ",", 2)
+			$aBrowserIDs = _CompactConfigIDs($aDefaultBrowserIDs)
+		EndIf
 	EndIf
 
 	; Initialize browsers array
@@ -3427,6 +3470,8 @@ Func _GetConfig()
 		If $browserID = "" Then ContinueLoop
 
 		; Find default values (if any)
+		; Unknown custom IDs use a safely escaped,
+		; anchored literal as their fallback title expression.
 		Local $defaultDisplay = $browserID
 		Local $defaultTitle = "^" & _RegexEscapeLiteral($browserID) & "$"
 		Local $defaultWindowOffsets = "0,0,0,0"
@@ -3442,23 +3487,23 @@ Func _GetConfig()
 			EndIf
 		Next
 
-		; Read display name, falling back if a hand-edited INI made it blank
+		; Read browser display name, falling back if a hand-edited INI made it blank
 		Local $browserDisplay = StringStripWS(IniRead($configPath, $browserID & "_browser", "name", $defaultDisplay), 3)
 		If $browserDisplay = "" Then $browserDisplay = $defaultDisplay
 
-		; Read title regex(or set default)
+		; Read browser title regex and validate the exact expression used by ProcessWindow
 		Local $browserTitle = StringStripWS(IniRead($configPath, $browserID & "_browser", "title", $defaultTitle), 3)
 		If Not _IsValidRegex($browserTitle) Then $browserTitle = $defaultTitle
 
-		; Read windowed offsets (or set default)
-		Local $sWindowOffsets = StringStripWS(IniRead($configPath, $browserID & "_browser", "windowed_offsets", $defaultWindowOffsets), 3)
-		$sWindowOffsets = StringRegExpReplace($sWindowOffsets, "[, ]+$", "")
-		If $sWindowOffsets = "" Then $sWindowOffsets = $defaultWindowOffsets
-
-		; Read fullscreen offsets (or set default)
-		Local $sFullOffsets = StringStripWS(IniRead($configPath, $browserID & "_browser", "fullscreen_offsets", $defaultFullOffsets), 3)
-		$sFullOffsets = StringRegExpReplace($sFullOffsets, "[, ]+$", "")
-		 If $sFullOffsets = "" Then $sFullOffsets = $defaultFullOffsets
+		; Normalize all loaded browser offsets with the same signed-int32 rules as Settings
+		Local $sWindowOffsets = _NormalizeOffsetString( _
+			IniRead($configPath, $browserID & "_browser", "windowed_offsets", $defaultWindowOffsets), _
+			$defaultWindowOffsets _
+		)
+		Local $sFullOffsets = _NormalizeOffsetString( _
+			IniRead($configPath, $browserID & "_browser", "fullscreen_offsets", $defaultFullOffsets), _
+			$defaultFullOffsets _
+		)
 
 		; Store the browser
 		$g_aBrowsers[$i][0] = $browserID
@@ -3497,6 +3542,11 @@ Func _GetConfig()
 		; Convert to an array and remove blank, malformed, or duplicate IDs
 		Local $aRawGameIDs = StringSplit($sGames, ",", 2)
 		$aGameIDs = _CompactConfigIDs($aRawGameIDs)
+
+		If UBound($aGameIDs) = 0 Then
+			Local $aDefaultGameIDs = StringSplit($defaultGames, ",", 2)
+			$aGameIDs = _CompactConfigIDs($aDefaultGameIDs)
+		EndIf
 	EndIf
 
 	; Initialize games array
@@ -3508,6 +3558,8 @@ Func _GetConfig()
 		If $gameID = "" Then ContinueLoop
 
 		; Find default values (if any)
+		; Unknown custom IDs use a safely escaped,
+		; anchored literal as their fallback title expression.
 		Local $defaultDisplay = $gameID
 		Local $defaultTitle = "^" & _RegexEscapeLiteral($gameID) & "$"
 		Local $defaultWindowOffsets = "0,0,0,0"
@@ -3523,23 +3575,23 @@ Func _GetConfig()
 			EndIf
 		Next
 
-		; Read display name (or set default)
+		; Read game display name, falling back if a hand-edited INI made it blank
 		Local $gameDisplay = StringStripWS(IniRead($configPath, $gameID & "_game", "name", $defaultDisplay), 3)
 		If $gameDisplay = "" Then $gameDisplay = $defaultDisplay
 
-		; Read title regex(or set default)
+		; Read game title regex and validate the exact expression used by ProcessWindow
 		Local $gameTitle = StringStripWS(IniRead($configPath, $gameID & "_game", "title", $defaultTitle), 3)
 		If Not _IsValidRegex($gameTitle) Then $gameTitle = $defaultTitle
 
-		; Read windowed offsets (or set default)
-		Local $sWindowOffsets = StringStripWS(IniRead($configPath, $gameID & "_game", "windowed_offsets", $defaultWindowOffsets), 3)
-		$sWindowOffsets = StringRegExpReplace($sWindowOffsets, "[, ]+$", "")
-		If $sWindowOffsets = "" Then $sWindowOffsets = $defaultWindowOffsets
-
-		; Read fullscreen offsets (or set default)
-		Local $sFullOffsets = StringStripWS(IniRead($configPath, $gameID & "_game", "fullscreen_offsets", $defaultFullOffsets), 3)
-		$sFullOffsets = StringRegExpReplace($sFullOffsets, "[, ]+$", "")
-		If $sFullOffsets = "" Then $sFullOffsets = $defaultFullOffsets
+		; Normalize all loaded game offsets with the same signed-int32 rules as Settings
+		Local $sWindowOffsets = _NormalizeOffsetString( _
+			IniRead($configPath, $gameID & "_game", "windowed_offsets", $defaultWindowOffsets), _
+			$defaultWindowOffsets _
+		)
+		Local $sFullOffsets = _NormalizeOffsetString( _
+			IniRead($configPath, $gameID & "_game", "fullscreen_offsets", $defaultFullOffsets), _
+			$defaultFullOffsets _
+		)
 
 		; Store in game array
 		$g_aGames[$i][0] = $gameID
@@ -3705,21 +3757,16 @@ EndFunc
 ; This function removes generic keys (e.g., "ALT") if a side-specific one exists (e.g., "LALT" or "RALT")
 Func _FilterModifiers(ByRef $modifiers)
 	Local $filtered[0]
-	For $i = 0 To UBound($modifiers) - 1
-		Local $mod = $modifiers[$i]
-		Switch $mod
-			Case "CTRL"
-				; If either LCTRL or RCTRL is in the array, skip generic CTRL
-				If _ArrayContains($modifiers, "LCTRL") Or _ArrayContains($modifiers, "RCTRL") Then ContinueLoop
-			Case "ALT"
-				If _ArrayContains($modifiers, "LALT") Or _ArrayContains($modifiers, "RALT") Then ContinueLoop
-			Case "SHIFT"
-				If _ArrayContains($modifiers, "LSHIFT") Or _ArrayContains($modifiers, "RSHIFT") Then ContinueLoop
-			Case "WIN"
-				If _ArrayContains($modifiers, "LWIN") Or _ArrayContains($modifiers, "RWIN") Then ContinueLoop
-		EndSwitch
-		_ArrayAdd($filtered, $mod)
-	Next
+
+	If _ArrayContains($modifiers, "CTRL") Or _ArrayContains($modifiers, "LCTRL") Or _ArrayContains($modifiers, "RCTRL") Then _
+		_ArrayAdd($filtered, "CTRL")
+	If _ArrayContains($modifiers, "ALT") Or _ArrayContains($modifiers, "LALT") Or _ArrayContains($modifiers, "RALT") Then _
+		_ArrayAdd($filtered, "ALT")
+	If _ArrayContains($modifiers, "SHIFT") Or _ArrayContains($modifiers, "LSHIFT") Or _ArrayContains($modifiers, "RSHIFT") Then _
+		_ArrayAdd($filtered, "SHIFT")
+	If _ArrayContains($modifiers, "WIN") Or _ArrayContains($modifiers, "LWIN") Or _ArrayContains($modifiers, "RWIN") Then _
+		_ArrayAdd($filtered, "WIN")
+
 	Return $filtered
 EndFunc
 
