@@ -41,9 +41,14 @@ EndFunc
 
 Global $g_szMutexName = "Browser Cursor Lock"
 Global $g_hMutex = _Singleton($g_szMutexName, 1)
+Global $g_iSingletonInitError = @error
 
-If @error Then
-	MsgBox(16, "Error", "Another instance is already running.")
+If $g_iSingletonInitError Then
+	If $g_iSingletonInitError = 2 Then
+		MsgBox(16, "Error", "Another instance is already running.")
+	Else
+		MsgBox(16, "Error", "Browser Cursor Lock could not create its single-instance mutex (error " & $g_iSingletonInitError & ").")
+	EndIf
 	Exit
 EndIf
 
@@ -326,7 +331,7 @@ Func ProcessWindow()
 		Next
 
 		; Check if the window belongs to a known game
-		If $iBrowserIndex <> -1 And $titleBeforeHyphen <> "" Then
+		If $iBrowserIndex <> -1 And $titleBeforeHyphen <> "" And IsArray($g_aGames) Then
 			For $i = 0 To UBound($g_aGames) - 1
 				Local $gameRegex = StringStripWS($g_aGames[$i][2], 3)
 
@@ -702,14 +707,21 @@ EndFunc
 
 Func _WinAPI_GetDPI()
 	Local $hDC = _WinAPI_GetDC(0)
+	If Not $hDC Then Return SetError(1, 0, 96)
+
+	Local $aDPI
 	If @AutoItX64 Then
-		Local $iDPI = DllCall("gdi32.dll", "int", "GetDeviceCaps", "ptr", $hDC, "int", 88)
+		$aDPI = DllCall("gdi32.dll", "int", "GetDeviceCaps", "ptr", $hDC, "int", 88)
 	Else
-		Local $iDPI = DllCall("gdi32.dll", "int", "GetDeviceCaps", "hwnd", $hDC, "int", 88)
+		$aDPI = DllCall("gdi32.dll", "int", "GetDeviceCaps", "hwnd", $hDC, "int", 88)
 	EndIf
+	Local $iCallError = @error
+
 	; 88 = LOGPIXELSX
 	_WinAPI_ReleaseDC(0, $hDC)
-	Return $iDPI[0]
+
+	If $iCallError Or Not IsArray($aDPI) Or $aDPI[0] <= 0 Then Return SetError(2, 0, 96)
+	Return $aDPI[0]
 EndFunc
 
 #EndRegion
@@ -858,6 +870,20 @@ Func LockCursorWithGeometry($hWnd, ByRef $aWindow, ByRef $aMonitor, ByRef $aClie
 	If Not $hWnd Or Not WinExists($hWnd) Then Return SetError(1, 0, False)
 	If Not IsArray($aWindow) Or Not IsArray($aMonitor) Or Not IsArray($aClientRect) Then _
 		Return SetError(2, 0, False)
+
+	; The state machine should guarantee these indexes, but validate them at the
+	; final point of use so a future state/configuration bug cannot index outside an array
+	If Not IsArray($g_aBrowsers) Or $browser < 0 Or $browser >= UBound($g_aBrowsers, 1) Then
+		If Not $bAuto Then DisplayMessage("Browser configuration state is invalid")
+		Return SetError(8, 0, False)
+	EndIf
+
+	If $game <> -1 Then
+		If Not IsArray($g_aGames) Or $game < 0 Or $game >= UBound($g_aGames, 1) Then
+			If Not $bAuto Then DisplayMessage("Game configuration state is invalid")
+			Return SetError(9, 0, False)
+		EndIf
+	EndIf
 
 	; Determine fullscreen state
 	Local $bFullscreen = IsWindowFullscreen($aWindow, $aMonitor, $aClientRect)
@@ -1174,10 +1200,10 @@ Func ReleaseCursorLockIfOwned()
 EndFunc
 
 Func ResetCursorLock($bReleaseCursor = True)
-	If Not $g_bCursorLocked Then Return
+	If Not $g_bCursorLocked Then Return True
 
 	If $bReleaseCursor Then
-		_WinAPI_ClipCursor(0)
+		If Not _WinAPI_ClipCursor(0) Then Return SetError(1, 0, False)
 	EndIf
 
 	$g_bCursorLocked = False
@@ -1192,6 +1218,7 @@ Func ResetCursorLock($bReleaseCursor = True)
 	Next
 
 	$bHotkeyLock = False
+	Return True
 EndFunc
 
 #EndRegion
@@ -1321,7 +1348,7 @@ Func DisplayMessage($sText, $iDuration = $configDuration, $sFontName = $configFo
 
 		; Calculate text dimensions using the reusable font
 		Local $aTextSize = _StringInPixelsNoGUI($sLocalText, $g_hFont)
-		If @error Then
+		If @error Or Not IsArray($aTextSize) Then
 			; Failed to set text dimensions
 			Return _DisplayMessageFail(5)
 		EndIf
@@ -1346,7 +1373,7 @@ Func DisplayMessage($sText, $iDuration = $configDuration, $sFontName = $configFo
 		Local $iMessageY = $aRect[1] + (($aRect[3] - $iTextHeight) / 2)
 
 		; Results for setting opacity
-		Local $aOpacityResult
+		Local $aResult
 
 		; Create GUI
 		If $hGUI = 0 Then
@@ -1359,7 +1386,7 @@ Func DisplayMessage($sText, $iDuration = $configDuration, $sFontName = $configFo
 				BitOR($WS_EX_TOPMOST, $WS_EX_LAYERED, $WS_EX_TOOLWINDOW, $WS_EX_NOACTIVATE) _
 			)
 
-			If @error Then
+			If @error Or $hGUI = 0 Then
 				; Failed to create the GUI
 				Return _DisplayMessageFail(6)
 			EndIf
@@ -1380,14 +1407,14 @@ Func DisplayMessage($sText, $iDuration = $configDuration, $sFontName = $configFo
 				)
 			EndIf
 
-			If @error Then
-				; Failed to set window style
+			If @error Or Not IsArray($aResult) Then
+				; Failed to set the window style
 				Return _DisplayMessageFail(7)
 			EndIf
 
-			; Set Opacity
+			; Set opacity
 			If @AutoItX64 Then
-				$aOpacityResult = DllCall("user32.dll", _
+				$aResult = DllCall("user32.dll", _
 					"bool", "SetLayeredWindowAttributes", _
 					"ptr", $hGUI, _
 					"dword", 0, _
@@ -1395,7 +1422,7 @@ Func DisplayMessage($sText, $iDuration = $configDuration, $sFontName = $configFo
 					"dword", $LWA_ALPHA _
 				)
 			Else
-				$aOpacityResult = DllCall("user32.dll", "bool", "SetLayeredWindowAttributes", _
+				$aResult = DllCall("user32.dll", "bool", "SetLayeredWindowAttributes", _
 					"hwnd", $hGUI, _
 					"dword", 0, _
 					"byte", $iLocalOpacity, _
@@ -1403,7 +1430,7 @@ Func DisplayMessage($sText, $iDuration = $configDuration, $sFontName = $configFo
 				)
 			EndIf
 
-			If Not @error And IsArray($aOpacityResult) And $aOpacityResult[0] Then
+			If Not @error And IsArray($aResult) And $aResult[0] Then
 				$g_iMessageOpacity = $iLocalOpacity
 			EndIf
 
@@ -1425,7 +1452,7 @@ Func DisplayMessage($sText, $iDuration = $configDuration, $sFontName = $configFo
 			; Update opacity only if it changed
 			If $g_iMessageOpacity <> $iLocalOpacity Then
 				If @AutoItX64 Then
-					$aOpacityResult = DllCall("user32.dll", _
+					$aResult = DllCall("user32.dll", _
 						"bool", "SetLayeredWindowAttributes", _
 						"ptr", $hGUI, _
 						"dword", 0, _
@@ -1433,7 +1460,7 @@ Func DisplayMessage($sText, $iDuration = $configDuration, $sFontName = $configFo
 						"dword", $LWA_ALPHA _
 					)
 				Else
-					$aOpacityResult = DllCall("user32.dll", "bool", "SetLayeredWindowAttributes", _
+					$aResult = DllCall("user32.dll", "bool", "SetLayeredWindowAttributes", _
 						"hwnd", $hGUI, _
 						"dword", 0, _
 						"byte", $iLocalOpacity, _
@@ -1441,7 +1468,7 @@ Func DisplayMessage($sText, $iDuration = $configDuration, $sFontName = $configFo
 					)
 				EndIf
 
-				If Not @error And IsArray($aOpacityResult) And $aOpacityResult[0] Then
+				If Not @error And IsArray($aResult) And $aResult[0] Then
 					$g_iMessageOpacity = $iLocalOpacity
 				EndIf
 			EndIf
@@ -1489,10 +1516,15 @@ Func DisplayMessage($sText, $iDuration = $configDuration, $sFontName = $configFo
 				"int", 0 _
 			)
 
-			If @error Or $aRet[0] <> 0 Then
+			If @error Or Not IsArray($aRet) Then
 				_GDIPlus_StringFormatDispose($g_hFormat)
 				$g_hFormat = 0
 				Return _DisplayMessageFail(3)
+			EndIf
+			If $aRet[0] <> 0 Then
+				_GDIPlus_StringFormatDispose($g_hFormat)
+				$g_hFormat = 0
+				Return _DisplayMessageFail(3, $aRet[0])
 			EndIf
 
 			$aRet = DllCall("gdiplus.dll", _
@@ -1501,10 +1533,15 @@ Func DisplayMessage($sText, $iDuration = $configDuration, $sFontName = $configFo
 				"int", 0 _
 			)
 
-			If @error Or $aRet[0] <> 0 Then
+			If @error Or Not IsArray($aRet) Then
 				_GDIPlus_StringFormatDispose($g_hFormat)
 				$g_hFormat = 0
 				Return _DisplayMessageFail(4)
+			EndIf
+			If $aRet[0] <> 0 Then
+				_GDIPlus_StringFormatDispose($g_hFormat)
+				$g_hFormat = 0
+				Return _DisplayMessageFail(4, $aRet[0])
 			EndIf
 
 			; =====
@@ -1547,14 +1584,16 @@ Func DisplayMessage($sText, $iDuration = $configDuration, $sFontName = $configFo
 		; Do not delete or use $hRegion again
 
 		; Draw the updated string
-		_GDIPlus_GraphicsDrawStringEx( _
+		If Not _GDIPlus_GraphicsDrawStringEx( _
 			$g_hGraphic, _
 			$sLocalText, _
 			$g_hFont, _
 			$tLayout, _
 			$g_hFormat, _
 			$g_hBrush _
-		)
+		) Then
+			Return _DisplayMessageFail(16, @error)
+		EndIf
 
 		_WinAPI_RedrawWindow($hGUI, 0, 0, BitOR($RDW_INVALIDATE, $RDW_UPDATENOW))
 
@@ -1574,6 +1613,7 @@ Func DisplayMessage($sText, $iDuration = $configDuration, $sFontName = $configFo
 
 	; Release the lock
 	$bMessageLock = False
+	Return True
 EndFunc
 
 Func _DisplayMessageFail($iError, $iExtended = 0)
@@ -1701,6 +1741,9 @@ Func ClearMessageTimerStop()
 EndFunc
 
 Func ClearMessageTimer($hWnd, $uMsg, $idEvent, $dwTime)
+	; Ignore callbacks from an old timer whose KillTimer result was unresolved
+	If $iClearMessageID = 0 Or $idEvent <> $iClearMessageID Then Return
+
 	If $hGUI <> 0 And Not $bMessageLock Then
 		$bCallbackLock = True
 
@@ -1754,7 +1797,6 @@ EndFunc
 ; ========== ========== ========== ========== ==========
 
 Func _StringInPixelsNoGUI($sString, $hFont, $iColWidth = 0)
-
 	; Get the desktop DC
 	Local $hDC = _WinAPI_GetDC(0)
 	If Not $hDC Then Return SetError(1, 0, 0)
@@ -1787,7 +1829,12 @@ Func _StringInPixelsNoGUI($sString, $hFont, $iColWidth = 0)
 		Return SetError(4, 0, 0)
 	EndIf
 
-	_GDIPlus_GraphicsSetTextRenderingHint($hGraphic, $GDIP_TEXTRENDERINGHINT_ANTIALIASGRIDFIT)
+	If Not _GDIPlus_GraphicsSetTextRenderingHint($hGraphic, $GDIP_TEXTRENDERINGHINT_ANTIALIASGRIDFIT) Then
+		_GDIPlus_StringFormatDispose($hFormat)
+		_GDIPlus_GraphicsDispose($hGraphic)
+		_WinAPI_ReleaseDC(0, $hDC)
+		Return SetError(5, @error, 0)
+	EndIf
 
 	; If no column width is provided, use a large width
 	If $iColWidth = 0 Then $iColWidth = 1000
@@ -1795,22 +1842,22 @@ Func _StringInPixelsNoGUI($sString, $hFont, $iColWidth = 0)
 
 	; Measure the character ranges
 	Local $aRegions = _GDIPlus_GraphicsMeasureCharacterRanges($hGraphic, $sString, $hFont, $tLayout, $hFormat)
-	If Not IsArray($aRegions) Then
+	If @error Or Not IsArray($aRegions) Or UBound($aRegions) < 2 Or $aRegions[0] < 1 Then
 		_GDIPlus_StringFormatDispose($hFormat)
 		_GDIPlus_GraphicsDispose($hGraphic)
 		_WinAPI_ReleaseDC(0, $hDC)
-		Return SetError(5, 0, 0)
+		Return SetError(6, 0, 0)
 	EndIf
 
 	Local $aBounds = _GDIPlus_RegionGetBounds($aRegions[1], $hGraphic)
-	If @error Or Not IsArray($aBounds) Then
+	If @error Or Not IsArray($aBounds) Or UBound($aBounds) < 4 Then
 		_GDIPlus_StringFormatDispose($hFormat)
 		For $i = 1 To $aRegions[0]
 			_GDIPlus_RegionDispose($aRegions[$i])
 		Next
 		_GDIPlus_GraphicsDispose($hGraphic)
 		_WinAPI_ReleaseDC(0, $hDC)
-		Return SetError(6, 0, 0)
+		Return SetError(7, 0, 0)
 	EndIf
 
 	; Get the measured width and height
@@ -1818,11 +1865,9 @@ Func _StringInPixelsNoGUI($sString, $hFont, $iColWidth = 0)
 
 	; Clean up
 	_GDIPlus_StringFormatDispose($hFormat)
-	If IsArray($aRegions) Then
-		For $i = 1 To $aRegions[0]
-			_GDIPlus_RegionDispose($aRegions[$i])
-		Next
-	EndIf
+	For $i = 1 To $aRegions[0]
+		_GDIPlus_RegionDispose($aRegions[$i])
+	Next
 	_GDIPlus_GraphicsDispose($hGraphic)
 	_WinAPI_ReleaseDC(0, $hDC)
 
@@ -1862,9 +1907,12 @@ Func ShowAboutWindow()
 	; Use the .exe's internal icon
 	GUICtrlCreateIcon(@ScriptFullPath, 0, 30, 10, 48, 48)
 
+	Local $sVersion = FileGetVersion(@ScriptFullPath)
+	If @error Or StringStripWS($sVersion, 3) = "" Then $sVersion = "1.0.0.0"
+
 	GUICtrlCreateLabel("Browser Cursor Lock", 100, 10, 250, 25)
 	GUICtrlSetFont(-1, 12, 700)
-	GUICtrlCreateLabel("Version: 1.0.0.0", 100, 35, 250, 20)
+	GUICtrlCreateLabel("Version: " & $sVersion, 100, 35, 250, 20)
 	GUICtrlCreateLabel("Author: Brogan Scott Houston McIntyre", 100, 55, 300, 20)
 
 	; GitHub link label
@@ -1912,22 +1960,25 @@ EndFunc
 
 Func LinkGitHubClick()
 	DisplayMessage("Going to Github!")
-	ShellExecute("https://github.com/TechTank/Browser-Cursor-Lock")
+	Local $iPID = ShellExecute("https://github.com/TechTank/Browser-Cursor-Lock")
+	If @error Or $iPID = 0 Then DisplayMessage("Unable to open GitHub")
 EndFunc
 
 Func LinkPaypalClick()
 	DisplayMessage("Going to Paypal!")
-	ShellExecute("https://paypal.me/broganat")
+	Local $iPID = ShellExecute("https://paypal.me/broganat")
+	If @error Or $iPID = 0 Then DisplayMessage("Unable to open PayPal")
 EndFunc
 
 Func LinkBraveClick()
 	DisplayMessage("Going to brogan.at")
-	ShellExecute("https://brogan.at/brave")
+	Local $iPID = ShellExecute("https://brogan.at/brave")
+	If @error Or $iPID = 0 Then DisplayMessage("Unable to open brogan.at")
 EndFunc
 
 Func _MakeLabelLinkStyle($id)
 	GUICtrlSetColor($id, 0x0000FF) ; Blue
-	GUICtrlSetFont($id, Default, Default, Default, "Segoe UI") ; or any font
+	GUICtrlSetFont($id, Default, Default, $GUI_FONTUNDERLINE, "Segoe UI")
 	GUICtrlSetCursor($id, $GUI_CURSOR_HAND) ; Hand cursor
 EndFunc
 
@@ -1949,7 +2000,6 @@ Global $configSplashMessages, $configBrowserMessages, $configGameMessages
 Global $configLockCursorFullscreen, $configLockCursorWindowed, $configLockCursorAllTitles
 Global $configAutoLockFullscreenGames, $configAutoLockFullscreenBrowsers
 
-Global $g_sCapturedHotkey = ""
 Global $bCapturing = False
 
 ; When the configuration window opens, make temporary copies
@@ -1962,7 +2012,7 @@ Global $hConfigGUI = 0
 ;--- Configuration Window Code ---
 Func _ResetWindowDetectionState()
 	If $currentHotkey <> "" Then
-		HotKeySet($currentHotkey)
+		If HotKeySet($currentHotkey) = 0 Then Return False
 		$currentHotkey = ""
 	EndIf
 
@@ -2941,7 +2991,7 @@ Func _SaveConfig($hHotkeyInput, $hLockFullscreen, $hLockWindowed, $hLockAllTitle
 
 	; Validate a changed hotkey before committing it to disk
 	; Settings keeps the runtime hotkey unregistered, so this
-	; registration is only a test
+	; registration is only a temporary test
 	If StringStripWS($newHotkey, 3) = "" Then $newHotkey = $configHotkey
 	If $newHotkey <> $configHotkey Then
 		Local $sRegisteredHotkey = $currentHotkey
@@ -3127,10 +3177,11 @@ Func _CleanupObsoleteConfigSections(ByRef $bWriteOK)
 EndFunc
 
 Func _IsValidRegex($sRegex)
-	If StringStripWS($sRegex, 3) = "" Then Return False
+	$sRegex = StringStripWS($sRegex, 3)
+	If $sRegex = "" Then Return False
 
-	StringRegExp("test", $sRegex)
-
+	; Runtime detection always prepends (?i), so validate that exact expression
+	StringRegExp("test", "(?i)" & $sRegex)
 	If @error Then Return False
 
 	Return True
@@ -3164,22 +3215,39 @@ EndFunc
 ; Get a list of system fonts
 Func _GetFontList()
 	Local $aData = _WinAPI_EnumFontFamilies(0, '', 0, BitOR($DEVICE_FONTTYPE, $TRUETYPE_FONTTYPE), '@*', 1) ; $ANSI_CHARSET = 0
-	If @error Then
+	If @error Or Not IsArray($aData) Or UBound($aData) = 0 Then
 		Local $aFonts[3] = ["Arial", "Times New Roman", "Courier New"]
 		Return $aFonts
-	Else
-		Local $iRows = UBound($aData)
-		Local $aResult[$iRows]
-		For $i = 0 To $iRows - 1
-			$aResult[$i] = $aData[$i][0] ; assuming the first column holds the font names
-		Next
-
-		_ArraySort($aResult)
-		Return $aResult
 	EndIf
+
+	Local $iRows = UBound($aData)
+	Local $aResult[$iRows]
+	For $i = 0 To $iRows - 1
+		$aResult[$i] = $aData[$i][0] ; assuming the first column holds the font names
+	Next
+
+	_ArraySort($aResult)
+	Return $aResult
 EndFunc
 
 ; ========== ========== ========== ========== ==========
+
+Func _ReadConfigBool($sSection, $sKey, $iDefault)
+	Local $sValue = StringStripWS(IniRead($configPath, $sSection, $sKey, String(Number($iDefault <> 0))), 3)
+	If $sValue = "0" Then Return 0
+	If $sValue = "1" Then Return 1
+	Return Number($iDefault <> 0)
+EndFunc
+
+Func _RegexEscapeLiteral($sText)
+	Local $sEscaped = ""
+	For $i = 1 To StringLen($sText)
+		Local $sChar = StringMid($sText, $i, 1)
+		If StringInStr("\\.^$|()[]{}*+?", $sChar, 1) Then $sEscaped &= "\"
+		$sEscaped &= $sChar
+	Next
+	Return $sEscaped
+EndFunc
 
 ; Normalize an INI ID list before allocating the runtime Browser/Game arrays
 ; Blank, malformed, and duplicate IDs are ignored so they cannot create empty
@@ -3208,23 +3276,23 @@ EndFunc
 
 Func _GetConfig()
 	; Read hotkey setting
-	$configHotkey = IniRead($configPath, "general", "hotkey", "{NUMPADSUB}")
-	If StringStripWS($configHotkey, 3) = "" Then $configHotkey = "{NUMPADSUB}"
+	$configHotkey = StringStripWS(IniRead($configPath, "general", "hotkey", "{NUMPADSUB}"), 3)
+	If $configHotkey = "" Then $configHotkey = "{NUMPADSUB}"
 
-	; Read cursor lock settings
-	$configLockCursorFullscreen = Number(IniRead($configPath, "cursor", "lock_cursor_fullscreen", "1"))
-	$configLockCursorWindowed = Number(IniRead($configPath, "cursor", "lock_cursor_windowed", "1"))
-	$configLockCursorAllTitles = Number(IniRead($configPath, "cursor", "lock_all_titles", "1"))
-	$configAutoLockFullscreenGames = Number(IniRead($configPath, "cursor", "auto_lock_fullscreen_games", "0"))
-	$configAutoLockFullscreenBrowsers = Number(IniRead($configPath, "cursor", "auto_lock_fullscreen_browsers", "0"))
+	; Read cursor lock settings as strict 0/1 values
+	$configLockCursorFullscreen = _ReadConfigBool("cursor", "lock_cursor_fullscreen", 1)
+	$configLockCursorWindowed = _ReadConfigBool("cursor", "lock_cursor_windowed", 1)
+	$configLockCursorAllTitles = _ReadConfigBool("cursor", "lock_all_titles", 1)
+	$configAutoLockFullscreenGames = _ReadConfigBool("cursor", "auto_lock_fullscreen_games", 0)
+	$configAutoLockFullscreenBrowsers = _ReadConfigBool("cursor", "auto_lock_fullscreen_browsers", 0)
 
-	; Read message display settings
-	$configSplashMessages = Number(IniRead($configPath, "notifications", "splash_messages", "1"))
-	$configBrowserMessages = Number(IniRead($configPath, "notifications", "browser_messages", "1"))
-	$configGameMessages = Number(IniRead($configPath, "notifications", "game_messages", "1"))
+	; Read notification settings as strict 0/1 values
+	$configSplashMessages = _ReadConfigBool("notifications", "splash_messages", 1)
+	$configBrowserMessages = _ReadConfigBool("notifications", "browser_messages", 1)
+	$configGameMessages = _ReadConfigBool("notifications", "game_messages", 1)
 
-	; Validate a startup hotkey even though normal runtime registration is deferred
-	; until an eligible browser/game is active.
+	; Validate the configured startup hotkey even though normal registration is
+	; deferred until an eligible browser/game is active
 	Local $result
 	If $currentHotkey = "" Then
 		$result = HotKeySet($configHotkey, "ToggleCursorLock")
@@ -3261,13 +3329,14 @@ Func _GetConfig()
 	$configFontSize = Number(IniRead($configPath, "message", "fontsize", "24"))
 	If $configFontSize <= 0 Then $configFontSize = 24
 
-	; Read and validate message duration (default 2000 ms)
-	$configDuration = Number(IniRead($configPath, "message", "duration", "2000"))
+	; Read and validate message duration (default 2000 ms), matching Settings limits
+	$configDuration = Int(Number(IniRead($configPath, "message", "duration", "2000")))
 	If $configDuration <= 0 Then $configDuration = 2000
+	If $configDuration > 120000 Then $configDuration = 120000
 
 	; Read and validate font family (default "Arial")
-	$configFont = IniRead($configPath, "message", "fontfamily", "Arial")
-	If StringStripWS($configFont, 3) = "" Then $configFont = "Arial"
+	$configFont = StringStripWS(IniRead($configPath, "message", "fontfamily", "Arial"), 3)
+	If $configFont = "" Then $configFont = "Arial"
 
 	; Validate both the configured family and the actual font object at the requested size
 	Local $hTestFamily = _GDIPlus_FontFamilyCreate($configFont)
@@ -3294,8 +3363,8 @@ Func _GetConfig()
 		$configFontSize = 24
 	EndIf
 
-	; Read and validate the message opacity (default 150)
-	$configOpacity = Number(IniRead($configPath, "message", "opacity", "150"))
+	; Read and validate message opacity (default 150)
+	$configOpacity = Int(Number(IniRead($configPath, "message", "opacity", "150")))
 	If $configOpacity <= 0 Then $configOpacity = 150
 	If $configOpacity >= 256 Then $configOpacity = 255
 
@@ -3339,12 +3408,12 @@ Func _GetConfig()
 
 		; Find default values (if any)
 		Local $defaultDisplay = $browserID
-		Local $defaultTitle = $browserID
+		Local $defaultTitle = "^" & _RegexEscapeLiteral($browserID) & "$"
 		Local $defaultWindowOffsets = "0,0,0,0"
 		Local $defaultFullOffsets = "0,0,0,0"
 
 		For $j = 0 To UBound($defaultBrowserData) - 1
-			If $defaultBrowserData[$j][0] = $browserID Then
+			If StringLower($defaultBrowserData[$j][0]) = StringLower($browserID) Then
 				$defaultDisplay = $defaultBrowserData[$j][1]
 				$defaultTitle = $defaultBrowserData[$j][2]
 				$defaultWindowOffsets = $defaultBrowserData[$j][3]
@@ -3353,8 +3422,9 @@ Func _GetConfig()
 			EndIf
 		Next
 
-		; Read display name (or set default)
-		Local $browserDisplay = IniRead($configPath, $browserID & "_browser", "name", $defaultDisplay)
+		; Read display name, falling back if a hand-edited INI made it blank
+		Local $browserDisplay = StringStripWS(IniRead($configPath, $browserID & "_browser", "name", $defaultDisplay), 3)
+		If $browserDisplay = "" Then $browserDisplay = $defaultDisplay
 
 		; Read title regex(or set default)
 		Local $browserTitle = StringStripWS(IniRead($configPath, $browserID & "_browser", "title", $defaultTitle), 3)
@@ -3419,12 +3489,12 @@ Func _GetConfig()
 
 		; Find default values (if any)
 		Local $defaultDisplay = $gameID
-		Local $defaultTitle = $gameID
+		Local $defaultTitle = "^" & _RegexEscapeLiteral($gameID) & "$"
 		Local $defaultWindowOffsets = "0,0,0,0"
 		Local $defaultFullOffsets = "0,0,0,0"
 
 		For $j = 0 To UBound($defaultGamesData) - 1
-			If $defaultGamesData[$j][0] = $gameID Then
+			If StringLower($defaultGamesData[$j][0]) = StringLower($gameID) Then
 				$defaultDisplay = $defaultGamesData[$j][1]
 				$defaultTitle = $defaultGamesData[$j][2]
 				$defaultWindowOffsets = $defaultGamesData[$j][3]
@@ -3434,7 +3504,8 @@ Func _GetConfig()
 		Next
 
 		; Read display name (or set default)
-		Local $gameDisplay = IniRead($configPath, $gameID & "_game", "name", $defaultDisplay)
+		Local $gameDisplay = StringStripWS(IniRead($configPath, $gameID & "_game", "name", $defaultDisplay), 3)
+		If $gameDisplay = "" Then $gameDisplay = $defaultDisplay
 
 		; Read title regex(or set default)
 		Local $gameTitle = StringStripWS(IniRead($configPath, $gameID & "_game", "title", $defaultTitle), 3)
@@ -3481,7 +3552,6 @@ Func _CaptureHotkey($hInput, $hButton, $hCancel, ByRef $aLockedControls)
 		GUICtrlSetState($aLockedControls[$i], $GUI_DISABLE)
 	Next
 
-	$g_sCapturedHotkey = ""
 	$bCapturing = True
 
 	GUICtrlSetData($hInput, "")
@@ -3575,7 +3645,6 @@ Func _CaptureHotkey($hInput, $hButton, $hCancel, ByRef $aLockedControls)
 			If $sConvertedHotkey <> "" Then
 				Local $iCurrentChordSize = UBound($modifiers) + 1 ; modifiers + one base key
 				If $iCurrentChordSize >= $iLastValidChordSize Then
-					$g_sCapturedHotkey = $sCurrentCaptured
 					$sLastValidHotkey = $sConvertedHotkey
 					$iLastValidChordSize = $iCurrentChordSize
 					GUICtrlSetData($hInput, $sLastValidHotkey)
@@ -3604,12 +3673,10 @@ Func _CaptureHotkey($hInput, $hButton, $hCancel, ByRef $aLockedControls)
 			Return SetError(0, 0, True)
 
 		Case 2
-			$g_sCapturedHotkey = ""
 			GUICtrlSetData($hInput, $sOriginalHotkey)
 			Return SetError(1, 0, False)
 
 		Case Else
-			$g_sCapturedHotkey = ""
 			GUICtrlSetData($hInput, $sOriginalHotkey)
 			Return SetError(0, 0, False)
 	EndSwitch
@@ -3677,6 +3744,7 @@ Func _InitKeyMap()
 	$g_oKeyMap.Add("2C", "PRINTSCREEN") ; PRTSC
 	$g_oKeyMap.Add("13", "PAUSE")
 	$g_oKeyMap.Add("14", "CAPSLOCK")
+	$g_oKeyMap.Add("90", "NUMLOCK")
 	$g_oKeyMap.Add("91", "SCROLLLOCK")
 	$g_oKeyMap.Add("5D", "APPSKEY") ; APPS
 
