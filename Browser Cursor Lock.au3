@@ -26,17 +26,37 @@ Global $bShutdown = False
 OnAutoItExitRegister("ExitScript")
 
 Func _Singleton($sMutexName, $iFlag)
-	Local $hMutex = DllCall("kernel32.dll", "hwnd", "CreateMutexW", "ptr", 0, "int", 1, "wstr", $sMutexName)
-	If @error Then Return SetError(1, 0, 0)
-	If Not $hMutex[0] Then Return SetError(1, 0, 0)
-	Local $iLastError = DllCall("kernel32.dll", "dword", "GetLastError")
-	If $iLastError[0] = 183 Then Return SetError(2, 0, $hMutex[0])
-	If $iFlag = 1 Then
-		If $iLastError[0] = 0 Then Return SetError(0, 0, $hMutex[0])
-		Return SetError($iLastError[0], 0, 0)
+	Local $aMutex = DllCall("kernel32.dll", "handle", "CreateMutexW", "ptr", 0, "int", 1, "wstr", $sMutexName)
+	If @error Or Not IsArray($aMutex) Or Not $aMutex[0] Then Return SetError(1, 0, 0)
+
+	Local $hMutex = $aMutex[0]
+	Local $aLastError = DllCall("kernel32.dll", "dword", "GetLastError")
+	If @error Or Not IsArray($aLastError) Then
+		DllCall("kernel32.dll", "bool", "CloseHandle", "handle", $hMutex)
+		Return SetError(3, 0, 0)
 	EndIf
-	If $iLastError[0] = 0 Then Return SetError(0, 0, 0)
-	Return SetError($iLastError[0], 0, 0)
+
+	Local $iLastError = $aLastError[0]
+
+	; ERROR_ALREADY_EXISTS means another copy owns/created the named mutex
+	If $iLastError = 183 Then
+		DllCall("kernel32.dll", "bool", "CloseHandle", "handle", $hMutex)
+		Return SetError(2, 0, 0)
+	EndIf
+
+	If $iFlag = 1 Then
+		If $iLastError = 0 Then Return SetError(0, 0, $hMutex)
+		DllCall("kernel32.dll", "bool", "CloseHandle", "handle", $hMutex)
+		Return SetError($iLastError, 0, 0)
+	EndIf
+
+	If $iLastError = 0 Then
+		DllCall("kernel32.dll", "bool", "CloseHandle", "handle", $hMutex)
+		Return SetError(0, 0, 0)
+	EndIf
+
+	DllCall("kernel32.dll", "bool", "CloseHandle", "handle", $hMutex)
+	Return SetError($iLastError, 0, 0)
 EndFunc
 
 Global $g_szMutexName = "Browser Cursor Lock"
@@ -1392,14 +1412,14 @@ Func DisplayMessage($sText, $iDuration = $configDuration, $sFontName = $configFo
 			EndIf
 
 			If @AutoItX64 Then
-				DllCall("user32.dll", _
+				$aResult = DllCall("user32.dll", _
 					"ptr", "SetWindowLongPtr", _
 					"hwnd", $hGUI, _
 					"int", $GWL_EXSTYLE, _
 					"ptr", BitOR($WS_EX_NOACTIVATE, $WS_EX_TOOLWINDOW, $WS_EX_TRANSPARENT, $WS_EX_LAYERED) _
 				)
 			Else
-				DllCall("user32.dll", _
+				$aResult = DllCall("user32.dll", _
 					"long", "SetWindowLong", _
 					"hwnd", $hGUI, _
 					"int", $GWL_EXSTYLE, _
