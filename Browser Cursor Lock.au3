@@ -174,7 +174,7 @@ Func ExitScript()
 		$bShutdown = True
 		Sleep(1000)
 
-		; Give a transient GetClipCursor failure a few short retries
+		; Give transient GetClipCursor/ClipCursor failures a few short retries
 		If $g_bCursorLocked Then
 			Local $iReleaseAttempts = 0
 			While $g_bCursorLocked And $iReleaseAttempts < 4
@@ -183,6 +183,10 @@ Func ExitScript()
 				If ReleaseCursorLockIfOwned() Then ExitLoop
 				If $iReleaseAttempts < 4 Then Sleep(25)
 			WEnd
+		EndIf
+
+		If $g_bCursorLocked Then
+			MsgBox(48, "Cursor Lock Warning", "Browser Cursor Lock could not verify that its cursor restriction was released before shutdown.")
 		EndIf
 
 		; Clean up message GUI and resources
