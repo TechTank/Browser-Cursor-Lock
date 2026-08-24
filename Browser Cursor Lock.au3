@@ -26,37 +26,69 @@ Global $bShutdown = False
 OnAutoItExitRegister("ExitScript")
 
 Func _Singleton($sMutexName, $iFlag)
-	Local $aMutex = DllCall("kernel32.dll", "handle", "CreateMutexW", "ptr", 0, "int", 1, "wstr", $sMutexName)
-	If @error Or Not IsArray($aMutex) Or Not $aMutex[0] Then Return SetError(1, 0, 0)
+	Local Const $WAIT_OBJECT_0 = 0x00000000
+	Local Const $WAIT_ABANDONED = 0x00000080
+	Local Const $WAIT_TIMEOUT = 0x00000102
+	Local Const $WAIT_FAILED = 0xFFFFFFFF
+
+	; Create or open the named mutex without taking initial ownership
+	Local $aMutex = DllCall( _
+		"kernel32.dll", _
+		"handle", "CreateMutexW", _
+		"ptr", 0, _
+		"bool", False, _
+		"wstr", $sMutexName _
+	)
+
+	If @error Or Not IsArray($aMutex) Or Not $aMutex[0] Then
+		Return SetError(1, 0, 0)
+	EndIf
 
 	Local $hMutex = $aMutex[0]
-	Local $aLastError = DllCall("kernel32.dll", "dword", "GetLastError")
-	If @error Or Not IsArray($aLastError) Then
+
+	; Try to take ownership immediately
+	; Only one running instance can own this mutex
+	Local $aWait = DllCall( _
+		"kernel32.dll", _
+		"dword", "WaitForSingleObject", _
+		"handle", $hMutex, _
+		"dword", 0 _
+	)
+
+	If @error Or Not IsArray($aWait) Then
 		DllCall("kernel32.dll", "bool", "CloseHandle", "handle", $hMutex)
 		Return SetError(3, 0, 0)
 	EndIf
 
-	Local $iLastError = $aLastError[0]
+	Switch $aWait[0]
+		Case $WAIT_OBJECT_0, $WAIT_ABANDONED
+			; We now own the mutex
+			If $iFlag = 1 Then
+				Return SetError(0, 0, $hMutex)
+			EndIf
 
-	; ERROR_ALREADY_EXISTS means another copy owns/created the named mutex
-	If $iLastError = 183 Then
-		DllCall("kernel32.dll", "bool", "CloseHandle", "handle", $hMutex)
-		Return SetError(2, 0, 0)
-	EndIf
+			; Check-only mode: release ownership and close the handle
+			DllCall("kernel32.dll", "bool", "ReleaseMutex", "handle", $hMutex)
+			DllCall("kernel32.dll", "bool", "CloseHandle", "handle", $hMutex)
 
-	If $iFlag = 1 Then
-		If $iLastError = 0 Then Return SetError(0, 0, $hMutex)
-		DllCall("kernel32.dll", "bool", "CloseHandle", "handle", $hMutex)
-		Return SetError($iLastError, 0, 0)
-	EndIf
+			Return SetError(0, 0, 0)
 
-	If $iLastError = 0 Then
-		DllCall("kernel32.dll", "bool", "CloseHandle", "handle", $hMutex)
-		Return SetError(0, 0, 0)
-	EndIf
+		Case $WAIT_TIMEOUT
+			; Another live instance currently owns the mutex
+			DllCall("kernel32.dll", "bool", "CloseHandle", "handle", $hMutex)
+			Return SetError(2, 0, 0)
 
-	DllCall("kernel32.dll", "bool", "CloseHandle", "handle", $hMutex)
-	Return SetError($iLastError, 0, 0)
+		Case $WAIT_FAILED
+			; WaitForSingleObject failed
+			DllCall("kernel32.dll", "bool", "CloseHandle", "handle", $hMutex)
+			Return SetError(3, 0, 0)
+
+		Case Else
+			; Unexpected wait result
+			Local $iWaitResult = $aWait[0]
+			DllCall("kernel32.dll", "bool", "CloseHandle", "handle", $hMutex)
+			Return SetError(4, $iWaitResult, 0)
+	EndSwitch
 EndFunc
 
 Global $g_szMutexName = "Browser Cursor Lock"
@@ -168,12 +200,10 @@ EndFunc
 
 Func ExitScript()
 	If $bShutdown = False Then
-		If IsDeclared("configSplashMessages") And $configSplashMessages Then
-			DisplayMessage("Closing Browser Cursor Lock")
-		EndIf
 		$bShutdown = True
-		Sleep(1000)
 
+		; Release shared cursor state immediately on shutdown, before any
+		; notification delay keeps the process alive
 		; Give transient GetClipCursor/ClipCursor failures a few short retries
 		If $g_bCursorLocked Then
 			Local $iReleaseAttempts = 0
@@ -187,6 +217,11 @@ Func ExitScript()
 
 		If $g_bCursorLocked Then
 			MsgBox(48, "Cursor Lock Warning", "Browser Cursor Lock could not verify that its cursor restriction was released before shutdown.")
+		EndIf
+
+		If IsDeclared("configSplashMessages") And $configSplashMessages Then
+			DisplayMessage("Closing Browser Cursor Lock")
+			Sleep(1000)
 		EndIf
 
 		; Clean up message GUI and resources
@@ -239,7 +274,7 @@ Func ExitScript()
 			$g_hMutex = 0
 		EndIf
 
-		OnAutoItExitRegister("") ; Unregisters the exit function
+		OnAutoItExitUnRegister("ExitScript") ; Unregisters the exit function
 		Exit
 	EndIf
 EndFunc
@@ -298,10 +333,8 @@ Func ProcessWindow()
 		$g_hLastHwnd = 0
 		$g_sLastWindowTitle = ""
 
-		If $currentHotkey <> "" Then
-			HotKeySet($currentHotkey)
-			$currentHotkey = ""
-		EndIf
+		; No eligible Browser/Game remains, so the runtime hotkey is not needed
+		_SyncRuntimeHotkey(False)
 
 		Return
 	EndIf
@@ -310,6 +343,7 @@ Func ProcessWindow()
 
 	Local $iBrowserIndex = -1
 	Local $iGameIndex = -1
+	Local $bHotkeyStateChanged = False
 
 	; Skip title parsing if both the handle and title remain the same
 	If $currentHwnd <> $g_hLastHwnd Or $currentWindow <> $g_sLastWindowTitle Then
@@ -345,6 +379,7 @@ Func ProcessWindow()
 		; Check if the window belongs to a known browser
 		For $i = 0 To UBound($g_aBrowsers) - 1
 			Local $browserRegex = StringStripWS($g_aBrowsers[$i][2], 3)
+			If $browserRegex = "" Then ContinueLoop
 
 			; Use RegEx to match the browser title case-insensitively
 			; without lowercasing the pattern itself
@@ -358,6 +393,7 @@ Func ProcessWindow()
 		If $iBrowserIndex <> -1 And $titleBeforeHyphen <> "" And IsArray($g_aGames) Then
 			For $i = 0 To UBound($g_aGames) - 1
 				Local $gameRegex = StringStripWS($g_aGames[$i][2], 3)
+				If $gameRegex = "" Then ContinueLoop
 
 				; Match case-insensitively without modifying regex tokens
 				If StringRegExp($titleBeforeHyphen, "(?i)" & $gameRegex) Then
@@ -367,7 +403,12 @@ Func ProcessWindow()
 			Next
 		EndIf
 	Else
-		If $browser == -1 Then Return
+		If $browser == -1 Then
+			; A previous runtime-hotkey unregistration may have failed
+			; Keep retrying removal while no eligible Browser/Game exists
+			If $currentHotkey <> "" Then _SyncRuntimeHotkey(False)
+			Return
+		EndIf
 
 		$iBrowserIndex = $browser
 		$iGameIndex = $game
@@ -380,23 +421,17 @@ Func ProcessWindow()
 	; Handle browser activation state if a browser is detected
 	If $iBrowserIndex <> -1 Then
 		If $browser = -1 Or $browser <> $iBrowserIndex Then
-			$browser = $iBrowserIndex
-			$sMessageText = $configBrowserMessages ? $g_aBrowsers[$iBrowserIndex][1] & " Browser activated" : ""
-
-			If $configLockCursorAllTitles Or _
-				($configAutoLockFullscreenBrowsers And $configLockCursorFullscreen) Then
-				; If there's an existing hotkey, remove it before setting a new one
-				If $currentHotkey = "" Then
-					; Attempt to set new hotkey
-					Local $result = HotKeySet($configHotkey, "ToggleCursorLock")
-
-					If $result = 0 Then
-						MsgBox(16, "HotKey Error", "Configured hotkey '" & $configHotkey & "' could not be set.")
-					Else
-						$currentHotkey = $configHotkey
-					EndIf
-				EndIf
+			; Any active lock may contain browser-specific offsets
+			; Release it before changing browsers so a later lock
+			; is rebuilt from the new browser config
+			If $browser <> -1 And $g_bCursorLocked And Not ReleaseCursorLockIfOwned() Then
+				$g_sLastWindowTitle = "" ; Force detection/release to retry next cycle
+				Return
 			EndIf
+
+			$browser = $iBrowserIndex
+			$bHotkeyStateChanged = True
+			$sMessageText = $configBrowserMessages ? $g_aBrowsers[$iBrowserIndex][1] & " Browser activated" : ""
 		EndIf
 
 		; If a game title was detected, update $game with the game index and window handle
@@ -412,18 +447,7 @@ Func ProcessWindow()
 
 				$game = $iGameIndex
 				$g_hActiveHwnd = $currentHwnd
-
-				; If there's an existing hotkey, remove it before setting a new one
-				If $currentHotkey = "" Then
-					; Attempt to set new hotkey
-					Local $result = HotKeySet($configHotkey, "ToggleCursorLock")
-
-					If $result = 0 Then
-						MsgBox(16, "HotKey Error", "Configured hotkey '" & $configHotkey & "' could not be set.")
-					Else
-						$currentHotkey = $configHotkey
-					EndIf
-				EndIf
+				$bHotkeyStateChanged = True
 
 				If $configGameMessages Then
 					$sMessageText = "Game detected: " & $g_aGames[$iGameIndex][1]
@@ -456,15 +480,7 @@ Func ProcessWindow()
 
 				$game = -1
 				$g_hActiveHwnd = 0
-
-				If _
-					$currentHotkey <> "" And _
-					Not $configLockCursorAllTitles And _
-					Not ($configAutoLockFullscreenBrowsers And $configLockCursorFullscreen) _
-				Then
-					HotKeySet($currentHotkey)
-					$currentHotkey = ""
-				EndIf
+				$bHotkeyStateChanged = True
 
 				If $configGameMessages Then
 					$sMessageText = "Game deactivated"
@@ -484,14 +500,10 @@ Func ProcessWindow()
 			$browser = -1
 			$game = -1
 			$g_hActiveHwnd = 0
+			$bHotkeyStateChanged = True
 
 			$g_bAutoLockSuppressed = False
 			$g_hAutoLockSuppressedHwnd = 0
-
-			If $currentHotkey <> "" Then
-				HotKeySet($currentHotkey)
-				$currentHotkey = ""
-			EndIf
 
 			If $configBrowserMessages Then
 				$sMessageText = "Browser deactivated"
@@ -499,6 +511,22 @@ Func ProcessWindow()
 				If $bHadBrowserCursorLock Then _
 					$sMessageText &= " and cursor unlocked"
 			EndIf
+		EndIf
+	EndIf
+
+	; Keep the live global hotkey synchronized with the final Browser/Game state
+	Local $bHotkeyNeeded = $browser <> -1 And _
+		($configLockCursorAllTitles Or _
+		$game <> -1 Or _
+		($configAutoLockFullscreenBrowsers And $configLockCursorFullscreen))
+
+	; Registration remains transition-based so a failed registration is not retried
+	; every processing cycle
+	; A failed unregistration is different: $currentHotkey remains nonblank, so
+	; retry removing that stale live registration until it succeeds
+	If $bHotkeyStateChanged Or ($currentHotkey <> "" And Not $bHotkeyNeeded) Then
+		If Not _SyncRuntimeHotkey($bHotkeyNeeded) And $bHotkeyNeeded Then
+			MsgBox(16, "HotKey Error", "Configured hotkey '" & $configHotkey & "' could not be set.")
 		EndIf
 	EndIf
 
@@ -580,8 +608,9 @@ Func TryAutoLock($hWnd, ByRef $aWindow)
 	If $g_bAutoLockSuppressed And $g_hAutoLockSuppressedHwnd = $hWnd Then Return
 
 	; Use the geometry already gathered above so LockCursor() does not repeat
-	; WinGetPos/monitor/client queries. Suppress repeated retries for this
-	; fullscreen cycle if the actual ClipCursor operation fails.
+	; WinGetPos/monitor/client queries
+	; Suppress repeated retries for this fullscreen cycle if the actual
+	; ClipCursor operation fails
 	If Not LockCursorWithGeometry($hWnd, $aWindow, $aMonitor, $aClientRect, True) Then
 		$g_bAutoLockSuppressed = True
 		$g_hAutoLockSuppressedHwnd = $hWnd
@@ -627,11 +656,11 @@ Func WindowClientRect($hWnd)
 	Local $iWidth = DllStructGetData($tClientRect, 3)
 	Local $iHeight = DllStructGetData($tClientRect, 4)
 
-	Local $tPoint = DllStructCreate("int X; int Y")
+	Local $tPoint = DllStructCreate($tagPOINT)
 	DllStructSetData($tPoint, "X", 0)
 	DllStructSetData($tPoint, "Y", 0)
 
-	_WinAPI_ClientToScreen($hWnd, DllStructGetPtr($tPoint))
+	_WinAPI_ClientToScreen($hWnd, $tPoint)
 	If @error Then Return SetError(2, 0, 0)
 
 	Local $aClientRect[4] = [ _
@@ -712,13 +741,14 @@ Func GetWindowBorders()
 
 	; Read values from registry
 	Local $iBorderWidth = RegRead($sRegKey, "BorderWidth")
+	If @error Then Return SetError(1, 0, 0) ; Registry key missing
+	
 	Local $iPaddedBorderWidth = RegRead($sRegKey, "PaddedBorderWidth")
+	If @error Then Return SetError(2, 0, 0) ; Registry key missing
 
-	If @error Then Return SetError(1, 0, 0) ; Registry keys missing
-
-	; Convert from twips (-1 twip = 1/20th of a pixel)
-	$iBorderWidth = Abs($iBorderWidth) / 20
-	$iPaddedBorderWidth = Abs($iPaddedBorderWidth) / 20
+	; Convert twips to pixels at 96 DPI
+	$iBorderWidth = Abs($iBorderWidth) / 15
+	$iPaddedBorderWidth = Abs($iPaddedBorderWidth) / 15
 
 	; Apply DPI scaling
 	Local $iDPI = _WinAPI_GetDPI()
@@ -789,6 +819,15 @@ Func ToggleCursorLock()
 		EndIf
 
 		DisplayMessage("Cursor unlocked")
+		Sleep(5)
+		$bHotkeyLock = False
+		Return
+	EndIf
+
+	; A new manual lock always requires a currently detected browser
+	; This also makes a stale registration harmless if unregistration ever fails
+	If $browser = -1 Then
+		DisplayMessage("No active browser window detected")
 		Sleep(5)
 		$bHotkeyLock = False
 		Return
@@ -912,7 +951,7 @@ Func LockCursorWithGeometry($hWnd, ByRef $aWindow, ByRef $aMonitor, ByRef $aClie
 	; Determine fullscreen state
 	Local $bFullscreen = IsWindowFullscreen($aWindow, $aMonitor, $aClientRect)
 
-	; An automatic request is valid only while the window is actually fullscreen.
+	; An automatic request is valid only while the window is actually fullscreen
 	If $bAuto And Not $bFullscreen Then Return False
 
 	; =====
@@ -1115,9 +1154,9 @@ Func ProcessCursorLock()
 
 	; =====
 
-	; The clipping rectangle depends on the client geometry as well as the
-	; outer window. Browser UI/F11 changes can alter the client area without
-	; changing WinGetPos(), so monitor it for both manual and automatic locks.
+	; The clipping rectangle depends on the client geometry as well as the outer window
+	; Browser UI/F11 changes can alter the client area without changing WinGetPos(), so
+	; monitor it for both manual and automatic locks
 	Local $aClientRect = WindowClientRect($g_hCursorLockHwnd)
 	If @error Or Not IsArray($aClientRect) Then
 		If Not ReleaseCursorLockIfOwned() Then Return
@@ -1226,8 +1265,9 @@ Func ReleaseCursorLockIfOwned()
 		Return True
 	EndIf
 
-	; We still own the exact system clip. Only clear bookkeeping if Windows
-	; actually accepts the release; otherwise keep state intact for a retry.
+	; We still own the exact system clip
+	; Only clear bookkeeping if Windows actually accepts the release;
+	; otherwise keep state intact for a retry
 	Return ResetCursorLock(True)
 EndFunc
 
@@ -1297,7 +1337,6 @@ Global $bCallbackLock = False
 Global $iClearMessageID = 0
 
 Func UpdateMessageFont($sFontName, $iFontSize)
-
 	; Nothing changed
 	If $g_hFont <> 0 And _
 		$g_sFontName = $sFontName And _
@@ -1306,31 +1345,49 @@ Func UpdateMessageFont($sFontName, $iFontSize)
 		Return True
 	EndIf
 
-	; Font object depends on both family and size
-	If $g_hFont <> 0 Then
-		_GDIPlus_FontDispose($g_hFont)
-		$g_hFont = 0
-	EndIf
+	; Start with the currently cached family. If the requested family is
+	; different, create a replacement separately so the existing valid cache
+	; remains untouched until the complete replacement is known to work
+	Local $hCandidateFamily = $g_hFontFamily
+	Local $bCandidateFamilyIsNew = False
 
-	; Family only depends on font name
-	If $g_hFontFamily <> 0 And $g_sFontName <> $sFontName Then
-		_GDIPlus_FontFamilyDispose($g_hFontFamily)
-		$g_hFontFamily = 0
-	EndIf
+	If $g_hFontFamily = 0 Or $g_sFontName <> $sFontName Then
+		$hCandidateFamily = _GDIPlus_FontFamilyCreate($sFontName)
 
-	; Create family if necessary
-	If $g_hFontFamily = 0 Then
-		$g_hFontFamily = _GDIPlus_FontFamilyCreate($sFontName)
-		If @error Or $g_hFontFamily = 0 Then _
+		If @error Or $hCandidateFamily = 0 Then _
 			Return SetError(1, 0, False)
+
+		$bCandidateFamilyIsNew = True
 	EndIf
 
-	; Create font
-	$g_hFont = _GDIPlus_FontCreate($g_hFontFamily, $iFontSize, 0)
-	If @error Or $g_hFont = 0 Then _
-		Return SetError(2, 0, False)
+	; Create the requested font using the candidate family
+	Local $hCandidateFont = _GDIPlus_FontCreate($hCandidateFamily, $iFontSize, 0)
 
-	; Cache identity
+	If @error Or $hCandidateFont = 0 Then
+		; Extremely defensive: dispose a returned handle even if the UDF also
+		; reported an error
+		If $hCandidateFont <> 0 Then _
+			_GDIPlus_FontDispose($hCandidateFont)
+
+		; Dispose only a newly-created candidate family
+		; Never destroy the currently valid cached family on a failed replacement
+		If $bCandidateFamilyIsNew And $hCandidateFamily <> 0 Then _
+			_GDIPlus_FontFamilyDispose($hCandidateFamily)
+
+		Return SetError(2, 0, False)
+	EndIf
+
+	; The complete replacement is valid
+	; Retire the old resources only now
+	If $g_hFont <> 0 Then _
+		_GDIPlus_FontDispose($g_hFont)
+
+	If $bCandidateFamilyIsNew And $g_hFontFamily <> 0 Then _
+		_GDIPlus_FontFamilyDispose($g_hFontFamily)
+
+	; Publish the new valid cache
+	$g_hFontFamily = $hCandidateFamily
+	$g_hFont = $hCandidateFont
 	$g_sFontName = $sFontName
 	$g_iFontSize = $iFontSize
 
@@ -1862,10 +1919,13 @@ Func _StringInPixelsNoGUI($sString, $hFont, $iColWidth = 0)
 	EndIf
 
 	If Not _GDIPlus_GraphicsSetTextRenderingHint($hGraphic, $GDIP_TEXTRENDERINGHINT_ANTIALIASGRIDFIT) Then
+		Local $iRenderingError = @error
+
 		_GDIPlus_StringFormatDispose($hFormat)
 		_GDIPlus_GraphicsDispose($hGraphic)
 		_WinAPI_ReleaseDC(0, $hDC)
-		Return SetError(5, @error, 0)
+
+		Return SetError(5, $iRenderingError, 0)
 	EndIf
 
 	; If no column width is provided, use a large width
@@ -1966,9 +2026,10 @@ Func ShowAboutWindow()
 EndFunc
 
 Func _ProcessAboutMessage($iMsgID, $hMsgSource)
-	; Ignore messages that do not belong to the About GUI. This lets the
-	; normal main loop and the modal Settings loop share one About handler
-	; without confusing one GUI's $GUI_EVENT_CLOSE with the other.
+	; Ignore messages that do not belong to the About GUI
+	; This lets the normal main loop and the modal Settings loop
+	; share one About handler without confusing one GUI's $GUI_EVENT_CLOSE
+	; with the other
 	If Not $bAbout Or $hAboutGUI = 0 Or $hMsgSource <> $hAboutGUI Then Return False
 
 	Switch $iMsgID
@@ -2041,12 +2102,39 @@ Global $g_iSelectedBrowserIndex = -1
 Global $g_iSelectedGameIndex = -1
 Global $hConfigGUI = 0
 
-;--- Configuration Window Code ---
-Func _ResetWindowDetectionState()
+; Keep the live HotKeySet registration synchronized with what runtime detection needs
+; Startup validation and Settings' temporary hotkey test remain separate operations
+Func _SyncRuntimeHotkey($bShouldRegister)
+	If $bShouldRegister Then
+		; Already synchronized
+		If $currentHotkey = $configHotkey And $currentHotkey <> "" Then Return True
+
+		; A different live hotkey must be removed before registering the configured one
+		; Do not clear $currentHotkey unless AutoIt confirms the unregister succeeded
+		If $currentHotkey <> "" Then
+			If HotKeySet($currentHotkey) = 0 Then Return SetError(1, 0, False)
+			$currentHotkey = ""
+		EndIf
+
+		If HotKeySet($configHotkey, "ToggleCursorLock") = 0 Then _
+			Return SetError(2, 0, False)
+
+		$currentHotkey = $configHotkey
+		Return True
+	EndIf
+
+	; Runtime hotkey should not be registered
 	If $currentHotkey <> "" Then
-		If HotKeySet($currentHotkey) = 0 Then Return False
+		If HotKeySet($currentHotkey) = 0 Then Return SetError(3, 0, False)
 		$currentHotkey = ""
 	EndIf
+
+	Return True
+EndFunc
+
+Func _ResetWindowDetectionState()
+	; Do not clear $currentHotkey unless Windows/AutoIt confirms unregistration
+	If Not _SyncRuntimeHotkey(False) Then Return False
 
 	$browser = -1
 	$game = -1
@@ -2056,6 +2144,8 @@ Func _ResetWindowDetectionState()
 
 	$g_bAutoLockSuppressed = False
 	$g_hAutoLockSuppressedHwnd = 0
+
+	Return True
 EndFunc
 
 ;--- Configuration Window Code ---
@@ -2069,9 +2159,9 @@ Func ShowConfigWindow()
 
 	; Keep the global lock/unlock hotkey inactive while Settings and hotkey
 	; capture are running. Detection will rebuild it once Settings closes
-	If $currentHotkey <> "" Then
-		HotKeySet($currentHotkey)
-		$currentHotkey = ""
+	If Not _SyncRuntimeHotkey(False) Then
+		MsgBox(16, "HotKey Error", "Unable to disable the current runtime hotkey. Please try opening Settings again.")
+		Return
 	EndIf
 
 	ClearMessage(True)
@@ -2108,7 +2198,7 @@ Func ShowConfigWindow()
 			GUICtrlSetState($hLockAllTitles, $configLockCursorAllTitles ? $GUI_CHECKED : $GUI_UNCHECKED)
 			GUICtrlSetState($hAutoLockFullscreenGames, $configAutoLockFullscreenGames ? $GUI_CHECKED : $GUI_UNCHECKED)
 			GUICtrlSetState($hAutoLockFullscreenBrowsers, $configAutoLockFullscreenBrowsers ? $GUI_CHECKED : $GUI_UNCHECKED)
-		
+
 			; Browser auto-lock already includes games
 			; Keep the user's real Games preference separately while
 			; the checkbox is visually forced on
@@ -2316,7 +2406,7 @@ Func ShowConfigWindow()
 			Sleep(10)
 			ContinueLoop
 		EndIf
-		
+
 		; Ignore messages from any GUI other than this Settings window
 		; In particular, an About close event must never cancel Settings
 		If $hConfigMsgSource <> $hConfigGUI Then
@@ -2326,7 +2416,11 @@ Func ShowConfigWindow()
 
 		Switch $iConfigMsgID
 			Case $GUI_EVENT_CLOSE, $hCancel
-				_ResetWindowDetectionState()
+				If Not _ResetWindowDetectionState() Then
+					MsgBox(16, "HotKey Error", "Unable to reset window detection because the runtime hotkey could not be disabled.")
+					ContinueLoop
+				EndIf
+
 				GUIDelete($hConfigGUI)
 				TraySetClick(9)
 				ExitLoop
@@ -2365,11 +2459,14 @@ Func ShowConfigWindow()
 				$g_aBrowsers = $tmpBrowsers
 				$g_aGames = $tmpGames
 
-				MsgBox(64, "Settings Saved", "Configuration has been updated.")
-
 				; Re-detect the active window using the newly saved configuration
 				; to rebuild the hotkey state once
-				_ResetWindowDetectionState()
+				If Not _ResetWindowDetectionState() Then
+					MsgBox(48, "HotKey Warning", "Configuration was saved, but the runtime hotkey could not be disabled. Please try closing Settings again.")
+					ContinueLoop
+				EndIf
+
+				MsgBox(64, "Settings Saved", "Configuration has been updated.")
 
 				; ==========
 
@@ -2384,7 +2481,11 @@ Func ShowConfigWindow()
 				Local $iCaptureError = @error
 
 				If $iCaptureError = 1 Then
-					_ResetWindowDetectionState()
+					If Not _ResetWindowDetectionState() Then
+						MsgBox(16, "HotKey Error", "Unable to reset window detection because the runtime hotkey could not be disabled.")
+						ContinueLoop
+					EndIf
+
 					GUIDelete($hConfigGUI)
 					TraySetClick(9)
 					ExitLoop
@@ -2610,7 +2711,7 @@ Func ShowConfigWindow()
 			Case $hRemoveGame
 				If $g_iSelectedGameIndex <> -1 Then
 					; An empty list is valid and is persisted explicitly as ids=|
-					; so it remains distinct from a missing first-run configuration.
+					; so it remains distinct from a missing first-run configuration
 					; Remove the selected game from the array
 					_ArrayDelete($tmpGames, $g_iSelectedGameIndex)
 
@@ -3015,7 +3116,7 @@ Func _SaveConfig($hHotkeyInput, $hLockFullscreen, $hLockWindowed, $hLockAllTitle
 	Local $lockWindowed = GUICtrlRead($hLockWindowed) = $GUI_CHECKED ? "1" : "0"
 	Local $lockAllTitles = GUICtrlRead($hLockAllTitles) = $GUI_CHECKED ? "1" : "0"
 
-	; Use the remembered Games preference rather than the forced visual state.
+	; Use the remembered Games preference rather than the forced visual state
 	Local $autoLockFullscreenGames = $bAutoLockGamesUserState ? "1" : "0"
 	Local $autoLockFullscreenBrowsers = GUICtrlRead($hAutoLockFullscreenBrowsers) = $GUI_CHECKED ? "1" : "0"
 
@@ -3037,12 +3138,14 @@ Func _SaveConfig($hHotkeyInput, $hLockFullscreen, $hLockWindowed, $hLockAllTitle
 	; before either can become the live setting
 	Local $hTestFontFamily = _GDIPlus_FontFamilyCreate($fontName)
 	If @error Or $hTestFontFamily = 0 Then
+		If $hTestFontFamily <> 0 Then _GDIPlus_FontFamilyDispose($hTestFontFamily)
 		MsgBox(16, "Font Error", "The selected font '" & $fontName & "' could not be loaded.")
 		Return False
 	EndIf
 
 	Local $hTestFont = _GDIPlus_FontCreate($hTestFontFamily, $fontSize, 0)
 	If @error Or $hTestFont = 0 Then
+		If $hTestFont <> 0 Then _GDIPlus_FontDispose($hTestFont)
 		_GDIPlus_FontFamilyDispose($hTestFontFamily)
 		MsgBox(16, "Font Error", "The selected font size could not be created.")
 		Return False
@@ -3052,25 +3155,37 @@ Func _SaveConfig($hHotkeyInput, $hLockFullscreen, $hLockWindowed, $hLockAllTitle
 	_GDIPlus_FontFamilyDispose($hTestFontFamily)
 
 	; Validate a changed hotkey before committing it to disk
-	; Settings keeps the runtime hotkey unregistered, so this
-	; registration is only a temporary test
+	; Settings normally keeps the runtime hotkey unregistered, but verify that
+	; invariant before creating the temporary test registration
 	If StringStripWS($newHotkey, 3) = "" Then $newHotkey = $configHotkey
 	If $newHotkey <> $configHotkey Then
-		Local $sRegisteredHotkey = $currentHotkey
-		If $sRegisteredHotkey <> "" Then HotKeySet($sRegisteredHotkey)
+		If $currentHotkey <> "" And Not _SyncRuntimeHotkey(False) Then
+			MsgBox(16, "HotKey Error", "The current runtime hotkey could not be disabled. No settings were saved.")
+			Return False
+		EndIf
 
 		Local $result = HotKeySet($newHotkey, "ToggleCursorLock")
 		If $result = 0 Then
 			MsgBox(16, "HotKey Error", "New hotkey '" & $newHotkey & "' could not be set. The previous hotkey will be kept.")
 			$newHotkey = $configHotkey
 		Else
-			; Validation succeeded; release the temporary test registration
-			HotKeySet($newHotkey)
+			; Validation succeeded. Do not forget the temporary registration unless
+			; AutoIt confirms that it was actually removed
+			If HotKeySet($newHotkey) = 0 Then
+				$currentHotkey = $newHotkey
+
+				; Give the centralized runtime helper one immediate retry
+				; If that also fails, keep tracking the live registration and abort this save
+				If Not _SyncRuntimeHotkey(False) Then
+					MsgBox(16, "HotKey Error", "The new hotkey was validated but its temporary registration could not be removed. No settings were saved.")
+					Return False
+				EndIf
+			EndIf
 		EndIf
 	EndIf
 
 	; Keep an exact in-memory binary snapshot so a failed group of INI writes
-	; cannot leave a partially saved configuration behind or create a backup file.
+	; cannot leave a partially saved configuration behind or create a backup file
 	Local $bHadConfig = FileExists($configPath)
 	Local $vConfigBackup = Binary("")
 
@@ -3086,7 +3201,7 @@ Func _SaveConfig($hHotkeyInput, $hLockFullscreen, $hLockWindowed, $hLockAllTitle
 		FileClose($hBackupRead)
 
 		; FileRead may report -1 when the requested whole-file read reaches EOF;
-		; that still leaves the complete binary snapshot in $vConfigBackup.
+		; that still leaves the complete binary snapshot in $vConfigBackup
 		If $iBackupReadError <> 0 And $iBackupReadError <> -1 Then
 			MsgBox(16, "Settings Save Error", "Could not read the existing configuration. No settings were changed.")
 			Return False
@@ -3282,10 +3397,11 @@ Func _GetFontList()
 		Return $aFonts
 	EndIf
 
-	Local $iRows = UBound($aData)
+	Local $iRows = $aData[0][0]
 	Local $aResult[$iRows]
-	For $i = 0 To $iRows - 1
-		$aResult[$i] = $aData[$i][0] ; assuming the first column holds the font names
+
+	For $i = 1 To $iRows
+		$aResult[$i - 1] = $aData[$i][0]
 	Next
 
 	_ArraySort($aResult)
@@ -3355,35 +3471,30 @@ Func _GetConfig()
 
 	; Validate the configured startup hotkey even though normal registration is
 	; deferred until an eligible browser/game is active
-	Local $result
-	If $currentHotkey = "" Then
+	Local $result = HotKeySet($configHotkey, "ToggleCursorLock")
+
+	If $result = 0 Then
+		MsgBox(16, "HotKey Error", "Configured hotkey '" & $configHotkey & "' could not be set. Reverting to default '{NUMPADSUB}'.")
+		$configHotkey = "{NUMPADSUB}"
 		$result = HotKeySet($configHotkey, "ToggleCursorLock")
-		If $result = 0 Then
-			MsgBox(16, "HotKey Error", "Configured hotkey '" & $configHotkey & "' could not be set. Reverting to default '{NUMPADSUB}'.")
-			$configHotkey = "{NUMPADSUB}"
-			$result = HotKeySet($configHotkey, "ToggleCursorLock")
-			If $result = 0 Then
-				MsgBox(16, "HotKey Error", "Default hotkey '{NUMPADSUB}' could not be set.")
-			Else
-				; Validation only; normal window detection registers it when needed
-				HotKeySet($configHotkey)
+	EndIf
+
+	If $result = 0 Then
+		MsgBox(16, "HotKey Error", "Default hotkey '{NUMPADSUB}' could not be set.")
+	Else
+		; Validation only. Do not forget the registration unless AutoIt confirms
+		; that it was actually removed
+		If HotKeySet($configHotkey) = 0 Then
+			$currentHotkey = $configHotkey
+
+			; Give the centralized helper one immediate retry. If removal remains
+			; unresolved, keep tracking the live registration so ProcessWindow can
+			; retry whenever runtime does not need the hotkey
+			If Not _SyncRuntimeHotkey(False) Then
+				MsgBox(48, "HotKey Warning", "The configured hotkey was validated but could not be unregistered. Browser Cursor Lock will keep tracking the live registration.")
 			EndIf
 		Else
-			; Validation only; normal window detection registers it when needed
-			HotKeySet($configHotkey)
-		EndIf
-	ElseIf $currentHotkey <> $configHotkey Then
-		; If there's an existing hotkey, remove it before setting a new one
-		HotKeySet($currentHotkey)
-
-		; Attempt to set new hotkey
-		$result = HotKeySet($configHotkey, "ToggleCursorLock")
-		If $result = 0 Then
-			MsgBox(16, "HotKey Error", "Configured hotkey '" & $configHotkey & "' could not be set.")
-			$result = HotKeySet($currentHotkey, "ToggleCursorLock")
-			$configHotkey = $currentHotkey
-		Else
-			$currentHotkey = $configHotkey
+			$currentHotkey = ""
 		EndIf
 	EndIf
 
@@ -3400,30 +3511,46 @@ Func _GetConfig()
 	$configFont = StringStripWS(IniRead($configPath, "message", "fontfamily", "Arial"), 3)
 	If $configFont = "" Then $configFont = "Arial"
 
-	; Validate both the configured family and the actual font object at the requested size
+	; Validate the complete family+font-size pair
+	; If either part fails, retry the complete default pair so
+	; startup cannot accept a family that cannot make its font
 	Local $hTestFamily = _GDIPlus_FontFamilyCreate($configFont)
-	If @error Or $hTestFamily = 0 Then
-		MsgBox(16, "Font Error", "Configured font '" & $configFont & "' does not exist. Reverting to default 'Arial'.")
-		$configFont = "Arial"
-		$hTestFamily = _GDIPlus_FontFamilyCreate($configFont)
+	Local $iTestFamilyError = @error
+	Local $hTestFont = 0
+	Local $iTestFontError = 0
+
+	If Not $iTestFamilyError And $hTestFamily <> 0 Then
+		$hTestFont = _GDIPlus_FontCreate($hTestFamily, $configFontSize, 0)
+		$iTestFontError = @error
 	EndIf
 
-	If $hTestFamily <> 0 Then
-		Local $hTestFont = _GDIPlus_FontCreate($hTestFamily, $configFontSize, 0)
-		If @error Or $hTestFont = 0 Then
-			If $hTestFont <> 0 Then _GDIPlus_FontDispose($hTestFont)
-			MsgBox(16, "Font Error", "Configured font size '" & $configFontSize & "' could not be created. Reverting to default 24.")
-			$configFontSize = 24
-		Else
+	If $iTestFamilyError Or $hTestFamily = 0 Or $iTestFontError Or $hTestFont = 0 Then
+		If $hTestFont <> 0 Then
 			_GDIPlus_FontDispose($hTestFont)
+			$hTestFont = 0
 		EndIf
 
-		_GDIPlus_FontFamilyDispose($hTestFamily)
-	Else
-		; Extremely defensive fallback if even the default family cannot be created
+		If $hTestFamily <> 0 Then
+			_GDIPlus_FontFamilyDispose($hTestFamily)
+			$hTestFamily = 0
+		EndIf
+
+		MsgBox(16, "Font Error", "Configured font settings could not be created. Reverting to default Arial 24.")
 		$configFont = "Arial"
 		$configFontSize = 24
+
+		$hTestFamily = _GDIPlus_FontFamilyCreate($configFont)
+		$iTestFamilyError = @error
+		$iTestFontError = 0
+
+		If Not $iTestFamilyError And $hTestFamily <> 0 Then
+			$hTestFont = _GDIPlus_FontCreate($hTestFamily, $configFontSize, 0)
+			$iTestFontError = @error
+		EndIf
 	EndIf
+
+	If $hTestFont <> 0 Then _GDIPlus_FontDispose($hTestFont)
+	If $hTestFamily <> 0 Then _GDIPlus_FontFamilyDispose($hTestFamily)
 
 	; Read and validate message opacity (default 150)
 	$configOpacity = Int(Number(IniRead($configPath, "message", "opacity", "150")))
@@ -3475,7 +3602,7 @@ Func _GetConfig()
 
 		; Find default values (if any)
 		; Unknown custom IDs use a safely escaped,
-		; anchored literal as their fallback title expression.
+		; anchored literal as their fallback title expression
 		Local $defaultDisplay = $browserID
 		Local $defaultTitle = "^" & _RegexEscapeLiteral($browserID) & "$"
 		Local $defaultWindowOffsets = "0,0,0,0"
@@ -3520,15 +3647,15 @@ Func _GetConfig()
 	; ========== ========== ==========
 
 	; Default game data (used if missing from INI)
-	Local $defaultGames = "agar,diep,digdig,paper2,snake,wormate"
+	Local $defaultGames = "agar,diep,digdig,paper,snake,wormate"
 	Local $defaultGamesData = _
 		[ _
-			["agar", "Agar.io", "(?i)agar.io", "0,0,90,0", "0,0,90,0"], _
-			["diep", "Diep", "(?i)diep.io", "0,0,0,0", "0,0,0,0"], _
-			["digdig", "Digdig", "(?i)digdig.io", "0,0,0,0", "0,0,0,0"], _
-			["paper2", "Paper 2", "(?i)paper", "0,0,0,0", "0,0,0,0"], _
-			["snake", "Snake", "(?i)snake.io", "0,0,0,0", "0,0,0,0"], _
-			["wormate", "Wormate", "(?i)wormate.io", "0,0,0,0", "0,0,0,0"] _
+			["agar", "Agar.io", "agar\.io", "0,0,90,0", "0,0,90,0"], _
+			["diep", "Diep", "diep\.io", "0,0,0,0", "0,0,0,0"], _
+			["digdig", "Digdig", "digdig\.io", "0,0,0,0", "0,0,0,0"], _
+			["paper", "Paper", "paper\.io", "0,0,0,0", "0,0,0,0"], _
+			["snake", "Snake", "snake\.io", "0,0,0,0", "0,0,0,0"], _
+			["wormate", "Wormate", "wormate\.io", "0,0,0,0", "0,0,0,0"] _
 		]
 
 	; Read game IDs from the INI file
@@ -3563,7 +3690,7 @@ Func _GetConfig()
 
 		; Find default values (if any)
 		; Unknown custom IDs use a safely escaped,
-		; anchored literal as their fallback title expression.
+		; anchored literal as their fallback title expression
 		Local $defaultDisplay = $gameID
 		Local $defaultTitle = "^" & _RegexEscapeLiteral($gameID) & "$"
 		Local $defaultWindowOffsets = "0,0,0,0"
@@ -3617,11 +3744,12 @@ EndFunc
 Func _CaptureHotkey($hInput, $hButton, $hCancel, ByRef $aLockedControls)
 	Local $sLastValidHotkey = ""
 	Local $iLastValidChordSize = 0
+	Local $bInvalidGesture = False
 	Local $sOriginalHotkey = GUICtrlRead($hInput)
 	Local $iExitReason = 0 ; 1 = cancel capture, 2 = close Settings, 3 = valid capture
 
-	; Remember which controls were enabled before capture, then freeze them.
-	; Controls that were already disabled remain disabled after capture finishes.
+	; Remember which controls were enabled before capture, then freeze them
+	; Controls that were already disabled remain disabled after capture finishes
 	Local $aWasEnabled[UBound($aLockedControls)]
 	For $i = 0 To UBound($aLockedControls) - 1
 		$aWasEnabled[$i] = BitAND(GUICtrlGetState($aLockedControls[$i]), $GUI_DISABLE) = 0
@@ -3679,6 +3807,14 @@ Func _CaptureHotkey($hInput, $hButton, $hCancel, ByRef $aLockedControls)
 			EndIf
 		Next
 
+		; A multi-base-key gesture is invalid as a whole
+		; Wait until every key is released before allowing a fresh capture attempt
+		If $bInvalidGesture Then
+			If UBound($pressedKeys) = 0 Then $bInvalidGesture = False
+			Sleep(100)
+			ContinueLoop
+		EndIf
+
 		; A capture only completes after a valid base key was seen and all keys are released
 		; Modifier-only combinations remain in capture mode
 		If UBound($pressedKeys) = 0 And $sLastValidHotkey <> "" Then
@@ -3703,8 +3839,20 @@ Func _CaptureHotkey($hInput, $hButton, $hCancel, ByRef $aLockedControls)
 		Next
 
 		_RemoveDuplicates($modifiers)
-		; Filter out generic keys if a side-specific key is present
+		; Collapse left/right/generic variants into one logical modifier per family
 		$modifiers = _FilterModifiers($modifiers)
+
+		; HotKeySet supports one non-modifier/base key
+		; Reject the whole gesture when more than one base key is pressed instead
+		; of silently choosing one
+		If UBound($regularKeys) > 1 Then
+			$bInvalidGesture = True
+			$sLastValidHotkey = ""
+			$iLastValidChordSize = 0
+			GUICtrlSetData($hInput, "")
+			Sleep(100)
+			ContinueLoop
+		EndIf
 
 		; Merge ordered modifiers + normal keys
 		Dim $orderedKeys[0]
@@ -3963,11 +4111,7 @@ Func _RemoveDuplicates(ByRef $array)
 EndFunc
 
 Func _IsPressed($sHexKey, $vDLL = "user32.dll")
-	If @AutoItX64 Then
-		Local $aCall = DllCall($vDLL, "int", "GetAsyncKeyState", "int", "0x" & $sHexKey)
-	Else
-		Local $aCall = DllCall($vDLL, "short", "GetAsyncKeyState", "int", "0x" & $sHexKey)
-	EndIf
+	Local $aCall = DllCall($vDLL, "short", "GetAsyncKeyState", "int", "0x" & $sHexKey)
 	If @error Then Return SetError(@error, @extended, False)
 	Return BitAND($aCall[0], 0x8000) <> 0
 EndFunc
@@ -3993,23 +4137,21 @@ Func ConvertToHotkeyString($sCaptured)
 			Case "LWIN", "RWIN", "WIN"
 				$sHotkey &= "#"
 			Case Else
-				; Only add one non-modifier key (the "base" key)
-				If Not $bBaseFound Then
-					$bBaseFound = True
-					; If it's a single character (letter, digit, punctuation), use it directly (lowercase preferred)
-					If StringLen($sKey) = 1 Then
-						$sHotkey &= StringLower($sKey)
-					Else
-						; For special keys (like F1, ESC, ENTER, etc.), ensure they are enclosed in braces
-						If StringInStr($sKey, "{") = 0 Then
-							$sHotkey &= "{" & $sKey & "}"
-						Else
-							$sHotkey &= $sKey
-						EndIf
-					EndIf
+				; HotKeySet supports only one non-modifier/base key
+				; Reject the conversion if a second base key reaches this helper
+				If $bBaseFound Then Return ""
+
+				$bBaseFound = True
+				; If it's a single character (letter, digit, punctuation), use it directly (lowercase preferred)
+				If StringLen($sKey) = 1 Then
+					$sHotkey &= StringLower($sKey)
 				Else
-					; Ignore additional non-modifier keys
-					ContinueLoop
+					; For special keys (like F1, ESC, ENTER, etc.), ensure they are enclosed in braces
+					If StringInStr($sKey, "{") = 0 Then
+						$sHotkey &= "{" & $sKey & "}"
+					Else
+						$sHotkey &= $sKey
+					EndIf
 				EndIf
 		EndSwitch
 	Next
