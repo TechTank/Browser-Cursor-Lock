@@ -742,7 +742,7 @@ Func GetWindowBorders()
 	; Read values from registry
 	Local $iBorderWidth = RegRead($sRegKey, "BorderWidth")
 	If @error Then Return SetError(1, 0, 0) ; Registry key missing
-	
+
 	Local $iPaddedBorderWidth = RegRead($sRegKey, "PaddedBorderWidth")
 	If @error Then Return SetError(2, 0, 0) ; Registry key missing
 
@@ -2462,11 +2462,11 @@ Func ShowConfigWindow()
 				; Re-detect the active window using the newly saved configuration
 				; to rebuild the hotkey state once
 				If Not _ResetWindowDetectionState() Then
-					MsgBox(48, "HotKey Warning", "Configuration was saved, but the runtime hotkey could not be disabled. Please try closing Settings again.")
+					MsgBox(48, "HotKey Warning", "Configuration was saved, but the runtime hotkey could not be disabled. Please try closing Settings again.", 0, $hConfigGUI)
 					ContinueLoop
 				EndIf
 
-				MsgBox(64, "Settings Saved", "Configuration has been updated.")
+				MsgBox(64, "Settings Saved", "Configuration has been updated.", 0, $hConfigGUI)
 
 				; ==========
 
