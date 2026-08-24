@@ -3164,7 +3164,7 @@ Func _SaveConfig($hHotkeyInput, $hLockFullscreen, $hLockWindowed, $hLockAllTitle
 			Return False
 		EndIf
 
-		Local $result = HotKeySet($newHotkey, "ToggleCursorLock")
+		Local $result = HotKeySet($newHotkey, "_HotkeyValidationStub")
 		If $result = 0 Then
 			MsgBox(16, "HotKey Error", "New hotkey '" & $newHotkey & "' could not be set. The previous hotkey will be kept.")
 			$newHotkey = $configHotkey
@@ -3471,12 +3471,12 @@ Func _GetConfig()
 
 	; Validate the configured startup hotkey even though normal registration is
 	; deferred until an eligible browser/game is active
-	Local $result = HotKeySet($configHotkey, "ToggleCursorLock")
+	Local $result = HotKeySet($configHotkey, "_HotkeyValidationStub")
 
 	If $result = 0 Then
 		MsgBox(16, "HotKey Error", "Configured hotkey '" & $configHotkey & "' could not be set. Reverting to default '{NUMPADSUB}'.")
 		$configHotkey = "{NUMPADSUB}"
-		$result = HotKeySet($configHotkey, "ToggleCursorLock")
+		$result = HotKeySet($configHotkey, "_HotkeyValidationStub")
 	EndIf
 
 	If $result = 0 Then
@@ -3740,6 +3740,10 @@ EndFunc
 
 ; =====
 #Region HotKeyCapture
+
+Func _HotkeyValidationStub()
+	; Temporary HotKeySet target used only to test registration availability
+EndFunc
 
 Func _CaptureHotkey($hInput, $hButton, $hCancel, ByRef $aLockedControls)
 	Local $sLastValidHotkey = ""
