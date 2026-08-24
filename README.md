@@ -11,7 +11,7 @@ Browser Cursor Lock can be controlled manually with a configurable hotkey or set
 ## 🚀 Features
 
 - **🎮 Built for browser gaming** - keeps the cursor contained so accidental movement outside the game does not interrupt play.
-- **🔒 Manual or automatic cursor locking** - use a hotkey when you want control, or let BCL handle fullscreen sessions automatically.
+- **🔒 Manual or automatic cursor locking** - use a hotkey when you want control, or let Browser Cursor Lock handle fullscreen sessions automatically.
 - **🌐 Flexible browser and game detection** - includes common browsers and games while allowing custom definitions for others.
 - **📐 Fine-tuned cursor boundaries** - adjust the lock area to account for browser UI, game layouts, and fullscreen differences.
 - **⚙️ Fully configurable** - manage detection, hotkeys, notifications, and supported games from the built-in Settings window.
